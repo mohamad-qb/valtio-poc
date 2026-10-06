@@ -3,6 +3,7 @@ import { type GroupType, groupDefinitions, productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import type { DealFieldsState } from "@shared/dealFields.ts";
 import type { DealSettingsState } from "@shared/dealSettings.ts";
+import type { GroupScope } from "@shared/validation.ts";
 import { type Product, createProduct } from "./productStore.ts";
 
 export type GroupStore = {
@@ -26,12 +27,15 @@ export const createGroupStore = (
 ): GroupStore => {
   const products: Record<string, Product> = {};
   const productIds: string[] = [];
+  // what its products' rules read of the group, through its observables (read once it exists)
+  const readGroup = (): GroupScope => ({ groupType, products: group.productList.map((product) => product.data) });
 
   groupDefinitions[groupType].productTypes.forEach((productType, index) => {
     const sourceProduct = source?.products[source.productIds[index]];
     const product = createProduct(
       productType,
       deal,
+      readGroup,
       productUi(productType, index),
       // plain deep copy: the clone gets its own observables and computeds
       sourceProduct && toJS(sourceProduct.data),

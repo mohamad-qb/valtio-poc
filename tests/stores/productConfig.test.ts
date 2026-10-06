@@ -110,17 +110,20 @@ describe("field configs: defineProduct", () => {
     ).toThrow(`"optionsCommon.strike" isn't in a product's data`);
   });
 
-  it("a rule listens to its product's data or the deal, and reads only what it listens to", () => {
+  it("a rule listens to its product's data, its group or the deal, and reads only what it listens to", () => {
     const withRule = (rule: unknown) => () =>
       defineProduct({ ...config, label: "Test", fields: vanillaFields(), rules: { strike: [rule] } } as never) as unknown as GenericProductDefinition;
     expect(withRule({ listen: ["groups.$GROUP_ID.ui.title"], message: "x", isValid: () => true })).toThrow(
-      `Test: a rule on strike listens to "groups.$GROUP_ID.ui.title", which is neither in a product's data nor a deal key`,
+      `Test: a rule on strike listens to "groups.$GROUP_ID.ui.title", which is neither in its product's data, its group, nor a deal key`,
     );
+    const groupPaths = ["groups.$GROUP_ID.groupType", "groups.$GROUP_ID.products.*.data.optionsCommon.callPut", "isInternal"];
+    expect(withRule({ listen: groupPaths, message: "x", isValid: () => true })).not.toThrow();
 
     // listens to Internal, reads the hedge type: fails the first time it runs, in every app
     const sneaky = withRule({ listen: ["isInternal"], message: "x", isValid: ({ read }: RuleContext) => read("hedgeType") === "a" })();
     const data = sneaky.createData(initialDealFields);
-    expect(() => fieldIssues(sneaky, "strike", data, dealReader(initialDealFields, initialDealSettings))).toThrow(
+    const scope = { readDeal: dealReader(initialDealFields, initialDealSettings), readGroup: () => ({ groupType: "VanillaGroup" as const, products: [data] }) };
+    expect(() => fieldIssues(sneaky, "strike", data, scope)).toThrow(
       'A validation rule read "hedgeType" without listening to it',
     );
   });

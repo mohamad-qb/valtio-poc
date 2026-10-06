@@ -33,12 +33,12 @@ export const createGroupStore = (
     productIds: [],
   });
 
-  const disposers: Array<() => void> = [];
+  const watchers: Array<(group: GroupStore) => () => void> = [];
 
   groupDefinitions[groupType].productTypes.forEach((productType, index) => {
     const productId = uuid();
     const sourceProduct = source?.products[source.productIds[index]];
-    const { productStore, dispose } = createProductStore(
+    const { productStore, watchValidation } = createProductStore(
       $dealStore,
       productType,
       `groups.${groupId}.products.${productId}`,
@@ -47,8 +47,10 @@ export const createGroupStore = (
     );
     groupStore.products[productId] = productStore;
     groupStore.productIds.push(productId);
-    disposers.push(dispose);
+    watchers.push(watchValidation);
   });
+  // every product is in: their rules can read the group now
+  const disposers = watchers.map((watch) => watch(groupStore));
 
   return {
     groupStore,

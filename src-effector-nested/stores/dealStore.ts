@@ -87,10 +87,11 @@ export const createDealStore = (devtools: DealDevtools) => {
   const $hedgeTypes = $isInternal.map(hedgeTypesFor);
   /**
    * Issues per product, per field: re-validated when a product changes, or
-   * a deal value its rules read (only the fields that read it).
+   * something its rules read in its group or the deal (only the fields that
+   * read it).
    */
   const $validation = combine($groups, $dealFields, $settings, (groups, dealFields, settings) =>
-    validateProducts(productsOf(groups), dealReader(dealFields, settings)),
+    validateProducts(groups, dealReader(dealFields, settings)),
   );
   const $hasValidationErrors = $validation.map((validation) =>
     Object.values(validation).some((issues) => Object.keys(issues).length > 0),

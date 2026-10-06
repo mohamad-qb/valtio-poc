@@ -20,7 +20,7 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
-import { type ReadDeal, dealReader } from "@shared/dealKeys.ts";
+import { dealReader } from "@shared/dealKeys.ts";
 import { type DealSettingsState, hedgeTypesFor, initialDealSettings } from "@shared/dealSettings.ts";
 import { type DealProduct, readDealKey, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
@@ -37,9 +37,12 @@ import {
   uniqueRequests,
 } from "@shared/products/productWrites.ts";
 import { createSpotPriceStream } from "@shared/spotPriceStream.ts";
-import type { FieldIssues } from "@shared/validation.ts";
+import { type FieldIssues, type RuleScope, createIssuesMemo } from "@shared/validation.ts";
 import { loadAllOptionsEffect, loadOptionsEffect } from "./optionsStore.ts";
 import { createProduct } from "./productModel.ts";
+
+// product data is never changed in place: issues are cached by it, and by what rules read outside it
+const validate = createIssuesMemo();
 
 /** What a deal needs from the app-wide developer settings. */
 type DealDevtools = {
@@ -48,7 +51,7 @@ type DealDevtools = {
 };
 
 /** A product as the collections show it: its own stores' values. */
-export type ProductItem = { id: string; ui: ProductUi; data: ProductData | null; issues: FieldIssues };
+export type ProductItem = { id: string; ui: ProductUi; data: ProductData | null };
 export type GroupItem = {
   id: string;
   groupType: GroupType;
@@ -65,16 +68,15 @@ type ProductWrites = { productId: string; writes: ProductWrite[] };
  * products they address.
  *
  * Each deal builds its collection from this function
- * (`keyval(() => createGroup($readDeal))`), not by cloning a collection: a
- * cloned model's `create` runs once more to read its shape, with nested
- * collections as placeholders that have no api. `$readDeal` is the deal's
- * values, for its products' validation.
+ * (`keyval(createGroup)`), not by cloning a collection: a cloned model's
+ * `create` runs once more to read its shape, with nested collections as
+ * placeholders that have no api.
  */
-const createGroup = ($readDeal: Store<ReadDeal>) => {
+const createGroup = () => {
   const $id = createStore("");
   const $groupType = createStore<GroupType>("VanillaGroup");
   const $ui = createStore({ title: "", index: 0 });
-  const products = keyval(() => createProduct($readDeal));
+  const products = keyval(createProduct);
 
   /** Each addressed product's writes: one api call for all of them. */
   const writeProducts = createEvent<readonly ProductWrites[]>();
@@ -132,9 +134,7 @@ export const createDealStore = (devtools: DealDevtools) => {
   // --- state
   const $dealFields = createStore<DealFieldsState>(initialDealFields);
   const $settings = createStore<DealSettingsState>(initialDealSettings);
-  /** The deal's values as product rules read them: every product's issues follow it. */
-  const $readDeal = combine($dealFields, $settings, dealReader);
-  const groups = keyval(() => createGroup($readDeal));
+  const groups = keyval(createGroup);
   const $groupsById = groups.$items as unknown as Store<GroupItem[]>;
   const $order = createStore<string[]>([]);
 
@@ -146,12 +146,30 @@ export const createDealStore = (devtools: DealDevtools) => {
   });
   const $isInternal = $settings.map((settings) => settings.isInternal);
   const $hedgeTypes = $isInternal.map(hedgeTypesFor);
-  /** Issues per product id: each product's own derived store, re-validated only when its data changes. */
-  const $validation = $groups.map((items) =>
-    Object.fromEntries(productsOf(items).map((product) => [product.id, product.issues])),
+  /** The deal's values as product rules read them. */
+  const $readDeal = combine($dealFields, $settings, dealReader);
+  /**
+   * Issues per product id, kept by the deal: a product's rules can read its
+   * group mates, which a collection item can't see. Re-validated when a
+   * product, its group or a deal value its rules read changes (only the
+   * fields that read it, `validate`).
+   */
+  const $validation = combine($groups, $readDeal, (items, readDeal) =>
+    Object.fromEntries(
+      items.flatMap((group) => {
+        const scope: RuleScope = {
+          readDeal,
+          readGroup: () => ({ groupType: group.groupType, products: group.products.flatMap(({ data }) => data ?? []) }),
+        };
+        return group.products.map((product): [string, FieldIssues] => [
+          product.id,
+          product.data ? validate(product.data, scope) : {},
+        ]);
+      }),
+    ),
   );
-  const $hasValidationErrors = $groups.map((items) =>
-    productsOf(items).some((product) => Object.keys(product.issues).length > 0),
+  const $hasValidationErrors = $validation.map((validation) =>
+    Object.values(validation).some((issues) => Object.keys(issues).length > 0),
   );
 
   // --- groups: built (new ids) from the current deal values, inserted at a position

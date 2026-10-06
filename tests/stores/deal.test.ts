@@ -141,6 +141,26 @@ describe.each(appNames)("%s deal", (app) => {
     expect(strikeIssues()).toEqual([["Must be at most 3 characters"], ["Must be at most 3 characters"]]);
   });
 
+  it("checks a Strategy's legs against each other: one Call and one Put", () => {
+    const flagged = (...products: number[]) =>
+      products.map((i) => deal.issues(i, "callPut").includes("A Strategy needs one Call and one Put"));
+    deal.commit(1, "callPut", "Call"); // products 1 and 2: the Strategy's legs
+    expect(flagged(1, 2)).toEqual([false, false]); // one leg set: nothing to compare yet
+    deal.commit(2, "callPut", "Call");
+    expect(flagged(1, 2)).toEqual([true, true]); // both flagged: the first without an edit of its own
+    deal.commit(0, "callPut", "Call"); // another group: no part in it
+    expect(flagged(0, 1, 2)).toEqual([false, true, true]);
+    deal.commit(1, "callPut", "Put");
+    expect(flagged(1, 2)).toEqual([false, false]);
+
+    deal.broadcast("callPut", "Put"); // every product at once
+    expect(flagged(0, 1, 2, 3)).toEqual([false, true, true, false]);
+    deal.cloneGroup(1); // a copy: its legs are judged among themselves
+    expect(flagged(3, 4)).toEqual([true, true]);
+    deal.commit(3, "callPut", "Call");
+    expect(flagged(1, 2, 3, 4)).toEqual([true, true, false, false]);
+  });
+
   it("re-checks the date rule when the deal broadcasts a date", () => {
     deal.commit(0, "deliveryDate", "2999-03-02");
     deal.broadcast("expiryDate", "2999-06-01");

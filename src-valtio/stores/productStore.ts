@@ -8,6 +8,7 @@ import {
   definitionOf,
 } from "@shared/products/productRegistry.ts";
 import type { DealStore } from "./dealStore.ts";
+import type { GroupStore } from "./groupStore.ts";
 import { watchFieldValidation } from "./validation.ts";
 
 /**
@@ -18,8 +19,8 @@ import { watchFieldValidation } from "./validation.ts";
  * nested proxy that owns it, whenever it or a field its rules read changes.
  *
  * `productPath`: the product's path from the deal (validation keys).
- * `initialData`: a plain deep copy, to clone. `dispose` drops every
- * subscription.
+ * `initialData`: a plain deep copy, to clone. `watchValidation` starts the
+ * subscriptions, and returns what drops them.
  */
 export const createProductStore = (
   $dealStore: DealStore,
@@ -34,12 +35,17 @@ export const createProductStore = (
     data: initialData ?? definition.createData($dealStore),
   } as AnyProductStore);
 
-  const stops = (Object.keys(definition.fieldPaths) as ProductFieldId[]).map((fieldId) =>
-    watchFieldValidation($dealStore, definition, productStore.data, productPath, fieldId),
-  );
-
   return {
     productStore,
-    dispose: () => stops.forEach((stop) => stop()),
+    /**
+     * Starts validating, once its group holds all its products (rules can
+     * read them, e.g. Call / Put across a Strategy). Returns the dispose.
+     */
+    watchValidation: (group: GroupStore) => {
+      const stops = (Object.keys(definition.fieldPaths) as ProductFieldId[]).map((fieldId) =>
+        watchFieldValidation($dealStore, group, definition, productStore.data, productPath, fieldId),
+      );
+      return () => stops.forEach((stop) => stop());
+    },
   };
 };

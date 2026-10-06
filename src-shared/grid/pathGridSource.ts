@@ -4,7 +4,7 @@ import { type ProductFieldId, asyncOptionFields, fields } from "../fields.ts";
 import type { PathDeal } from "../pathDeal.ts";
 import { type PathWrite, productPath } from "../paths.ts";
 import { definitionOfData } from "../products/productWrites.ts";
-import { fieldsReadingDeal } from "../validation.ts";
+import { fieldsReadingDeal, fieldsReadingGroup } from "../validation.ts";
 import {
   type CellKey,
   type CellRef,
@@ -79,6 +79,20 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
       }),
     );
 
+  /** The cells whose validation reads the group, in the group mates of products that changed: their error may have. */
+  const groupMateCells = (productIds: readonly string[]): CellRef[] => {
+    const changed = new Set(productIds);
+    return deal.getGroups().flatMap((group) => {
+      if (!group.productIds.some((id) => changed.has(id))) return [];
+      return group.productIds.flatMap((productId) => {
+        const product = changed.has(productId) ? undefined : deal.getProduct(productId);
+        return product
+          ? fieldsReadingGroup(definitionOfData(product.data)).map((fieldId) => ({ columnId: productId, fieldId }))
+          : [];
+      });
+    });
+  };
+
   const subscribeColumns: GridSource["subscribeColumns"] = (onChange) =>
     deal.subscribe((change) => {
       if (change.kind === "groups") onChange();
@@ -94,7 +108,7 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
       const stopDeal = deal.subscribe((change) => {
         switch (change.kind) {
           case "products":
-            return notify(change.ids.flatMap(productCells));
+            return notify([...change.ids.flatMap(productCells), ...groupMateCells(change.ids)]);
           case "dealFields":
             return notify([
               ...syncedFieldIds.map((fieldId) => ({ columnId: DEAL_COLUMN_ID, fieldId })),

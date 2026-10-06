@@ -1,5 +1,5 @@
 import { computed } from "mobx";
-import { Model, createContext, idProp, model, modelAction, prop } from "mobx-keystone";
+import { Model, createContext, getParent, idProp, model, modelAction, prop } from "mobx-keystone";
 import type { DealFieldsState } from "@shared/dealFields.ts";
 import type { DealSettingsState } from "@shared/dealSettings.ts";
 import { productUi } from "@shared/groups.ts";
@@ -14,6 +14,7 @@ import {
   definitionOfData,
   planProductWrites,
 } from "@shared/products/productWrites.ts";
+import type { GroupType } from "@shared/groups.ts";
 import { type FieldIssues, productIssues } from "@shared/validation.ts";
 
 /** The deal a product is in, provided by the deal to everything under it: rules read the deal through it. */
@@ -30,10 +31,18 @@ export class Product extends Model({
   title: prop<string>(),
   data: prop<ProductData>(),
 }) {
-  /** Every field's issues; validated again when this product's data, or a deal value a rule reads, changes. */
+  /** Every field's issues; validated again when this product's data, or what a rule reads of its group or deal, changes. */
   @computed get issues(): FieldIssues {
-    const deal = dealContext.get(this);
-    return productIssues(definitionOfData(this.data), this.data, (key) => deal?.[key]);
+    return productIssues(definitionOfData(this.data), this.data, {
+      readDeal: (key) => dealContext.get(this)?.[key],
+      readGroup: () => {
+        // its parent is its group's product list; a product outside a group is alone in it
+        const products = getParent<Product[]>(this);
+        const group = products && getParent<{ groupType: GroupType }>(products);
+        if (!products || !group) return { groupType: "VanillaGroup", products: [this.data] };
+        return { groupType: group.groupType, products: products.map((product) => product.data) };
+      },
+    });
   }
 
   @computed get hasValidationErrors() {

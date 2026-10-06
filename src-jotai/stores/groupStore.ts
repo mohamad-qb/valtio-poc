@@ -36,6 +36,7 @@ export const createGroupStore = (
     const sourceProduct = source?.products[source.productIds[index]];
     groupStore.products[productId] = createProductStore(
       deal,
+      () => groupStore,
       dealFields,
       productType,
       productUi(productType, index),

@@ -423,12 +423,13 @@ describe("effector-model", () => {
     const [strategy, average] = groups;
     const [edited, sibling] = strategy.products;
     const write = () => deal.actions.writePathsAction([{ path: fieldPath(strategy.id, edited as never, "expiryCut"), value: "TK15" }]);
+    const validation = deal.$validation.getState();
 
     write();
     const [nextStrategy, nextAverage] = deal.$groups.getState();
     expect(nextStrategy.products[0]).not.toBe(edited); // the edited product's item …
     expect(nextStrategy.products[1]).toBe(sibling); // … nothing else
-    expect(nextStrategy.products[1].issues).toBe(sibling.issues); // not re-validated
+    expect(deal.$validation.getState()[sibling.id]).toBe(validation[sibling.id]); // not re-validated
     expect(nextStrategy.ui).toBe(strategy.ui);
     expect(nextAverage).toBe(average);
 

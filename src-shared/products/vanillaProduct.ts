@@ -41,6 +41,8 @@ const dateSchema = optionalString(z.iso.date("Must be a valid date"));
 const STRIKE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.optionsCommon.strike";
 const EXPIRY_DATE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.optionsCommon.base.expiryDate";
 const DELIVERY_DATE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.optionsCommon.base.deliveryDate";
+/** Call / Put across every product of the group. */
+const GROUP_CALL_PUTS = "groups.$GROUP_ID.products.*.data.optionsCommon.callPut";
 
 /** Internal deals take a shorter strike than external ones. */
 const maxStrikeLength = (isInternal: unknown) => (isInternal ? 3 : 6);
@@ -143,6 +145,18 @@ export const vanillaProduct = defineProduct<VanillaProductStore["data"]>({
         listen: [STRIKE, "isInternal"],
         message: ({ read }) => `Must be at most ${maxStrikeLength(read("isInternal"))} characters`,
         isValid: ({ read }) => String(read(STRIKE)).length <= maxStrikeLength(read("isInternal")),
+      },
+    ],
+    callPut: [
+      {
+        // a rule on the group: a Strategy's legs are one Call and one Put (judged once both are set)
+        listen: ["groups.$GROUP_ID.groupType", GROUP_CALL_PUTS],
+        message: "A Strategy needs one Call and one Put",
+        isValid: ({ read }) => {
+          if (read("groups.$GROUP_ID.groupType") !== "Strategy") return true;
+          const legs = (read(GROUP_CALL_PUTS) as unknown[]).filter((value) => value === "Call" || value === "Put");
+          return new Set(legs).size === legs.length;
+        },
       },
     ],
   },

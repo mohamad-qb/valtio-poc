@@ -13,7 +13,7 @@ import {
   definitionOf,
   isReadOnly,
 } from "@shared/products/productRegistry.ts";
-import { fieldIssues } from "@shared/validation.ts";
+import { type GroupScope, type RuleScope, fieldIssues } from "@shared/validation.ts";
 import { type FieldModel, createFieldModel } from "./fieldModel.ts";
 
 /** A live product: its declared state, plus what observers read. */
@@ -56,12 +56,13 @@ const withDerivedFields = (
 export const createProduct = (
   productType: ProductType,
   deal: DealFieldsState & DealSettingsState,
+  readGroup: () => GroupScope,
   ui: ProductUi,
   sourceData?: ProductData,
 ): Product => {
   const definition = definitionOf(productType);
-  // read through the deal's observables: a rule's computed follows the deal keys it reads
-  const readDeal = dealReader(deal, deal);
+  // read through observables: a rule's computed follows what it reads, in its group or its deal
+  const scope: RuleScope = { readDeal: dealReader(deal, deal), readGroup };
   const read = (fieldId: ProductFieldId) => getValueByPath(product.data, definition.fieldPaths[fieldId]);
 
   const fields = Object.fromEntries(
@@ -69,7 +70,7 @@ export const createProduct = (
       fieldId,
       createFieldModel({
         read: () => read(fieldId),
-        issues: () => fieldIssues(definition, fieldId, product.data, readDeal),
+        issues: () => fieldIssues(definition, fieldId, product.data, scope),
         readOnly: isReadOnly(definition, fieldId),
       }),
     ]),

@@ -39,7 +39,7 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
     },
     readPath: deal.readPath,
     writePaths: (writes) => deal.actions.writePathsAction(writes),
-    fieldIssues: (productId, fieldId) => find(productId)?.product.issues[fieldId] ?? noIssues,
+    fieldIssues: (productId, fieldId) => deal.$validation.getState()[productId]?.[fieldId] ?? noIssues,
     getSettings: () => deal.$settings.getState(),
     getOptions: () => $optionsByKey.getState(),
 
@@ -55,7 +55,7 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
             next.every((group, i) => group.id === groups[i].id && group.ui === groups[i].ui);
           groups = next;
           if (!sameGroups) onChange({ kind: "groups" });
-          // a product item is a new object when its data or issues changed
+          // a product item is a new object when its data changed (its group mates' issues: the grid's)
           const nextProducts = productsById(next);
           const ids = [...nextProducts]
             .filter(([id, { product }]) => products.get(id)?.product !== product)

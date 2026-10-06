@@ -76,7 +76,7 @@ export const createPathDeal = (store: AppStore, dealId: string): PathDeal => {
     writePaths: (writes) => store.dispatch(writePaths(dealId, writes)),
     fieldIssues: (productId, fieldId) => {
       const found = findProduct(productId);
-      return (found && issuesOf(dealOf(), found.product.data)[fieldId]) ?? noIssues;
+      return (found && issuesOf(dealOf(), found.groupId, found.product.data)[fieldId]) ?? noIssues;
     },
     getSettings: () => dealOf().settings,
     getOptions: () => store.getState().options.byKey,

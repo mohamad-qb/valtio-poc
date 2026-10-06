@@ -77,6 +77,19 @@ for (const app of apps) {
       await expect(await cell(page, "Strike", 3)).not.toHaveClass(ERROR); // empty
     });
 
+    test("a Strategy's legs are one Call and one Put", async ({ page }) => {
+      await editCell(page, "Call / Put", 2, "Call"); // products 2 and 3: the Strategy's legs
+      await editCell(page, "Call / Put", 3, "Call");
+      // the first leg is flagged too, without an edit of its own
+      await expect(await cell(page, "Call / Put", 2)).toHaveClass(ERROR);
+      await expect(await cell(page, "Call / Put", 3)).toHaveClass(ERROR);
+      await editCell(page, "Call / Put", 1, "Call"); // the Vanilla Group: not a leg
+      await expect(await cell(page, "Call / Put", 1)).not.toHaveClass(ERROR);
+      await editCell(page, "Call / Put", 3, "Put");
+      await expect(await cell(page, "Call / Put", 2)).not.toHaveClass(ERROR);
+      await expect(await cell(page, "Call / Put", 3)).not.toHaveClass(ERROR);
+    });
+
     test("Delivery Date can't be before Expiry Date", async ({ page }) => {
       for (const n of [1, 2]) {
         await editCell(page, "Expiry Date", n, "2999-02-10");

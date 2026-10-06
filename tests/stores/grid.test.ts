@@ -133,4 +133,16 @@ describe.each(appNames)("%s grid source", (app) => {
     expect(seen()).toEqual([`${first}:strike`, "settings:hedgeType", "settings:isInternal"].sort());
     stop();
   });
+
+  it("an edit repaints its group mates' cells whose rules read it", async () => {
+    const [first, second] = productIds(); // the Strategy's legs
+    grid.write([{ columnId: first, fieldId: "callPut", value: "Call" }]);
+    await sleep(5);
+    const { seen, stop } = watch();
+    grid.write([{ columnId: second, fieldId: "callPut", value: "Call" }]);
+    await sleep(5);
+    expect(grid.getCell(first, "callPut")?.hasError).toBe(true); // a Strategy needs one Call and one Put
+    expect(seen()).toEqual([`${first}:callPut`, `${second}:callPut`].sort());
+    stop();
+  });
 });

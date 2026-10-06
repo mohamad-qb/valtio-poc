@@ -8,7 +8,8 @@ import {
   definitionOf,
 } from "@shared/products/productRegistry.ts";
 import { type ProductWrite, planProductWrites } from "@shared/products/productWrites.ts";
-import { type FieldIssues, createIssuesMemo } from "@shared/validation.ts";
+import { type FieldIssues, type RuleScope, createIssuesMemo } from "@shared/validation.ts";
+import type { GroupsState } from "./groupStore.ts";
 
 /**
  * Products as plain, immutable data, driven by their declarations
@@ -48,13 +49,19 @@ export const withProductWrites = (product: ProductState, writes: readonly Produc
 const validate = createIssuesMemo();
 
 /**
- * Issues of every product. Product data is immutable, so results are cached
- * by data identity and the deal values the rules read: only products that
- * changed are re-validated, and a deal change re-checks only the fields that
- * read it.
+ * Issues of every product, by id. Product data is immutable, so results are
+ * cached by data identity and what the rules read outside it (the group, the
+ * deal): only products that changed are re-validated, and anything else
+ * re-checks only the fields that read it.
  */
-export const validateProducts = (
-  products: readonly ProductState[],
-  readDeal: ReadDeal,
-): Record<string, FieldIssues> =>
-  Object.fromEntries(products.map((product) => [product.id, validate(product.data, readDeal)]));
+export const validateProducts = (groups: GroupsState, readDeal: ReadDeal): Record<string, FieldIssues> =>
+  Object.fromEntries(
+    Object.values(groups).flatMap((group) => {
+      const products = Object.values(group.products);
+      const scope: RuleScope = {
+        readDeal,
+        readGroup: () => ({ groupType: group.groupType, products: products.map((product) => product.data) }),
+      };
+      return products.map((product) => [product.id, validate(product.data, scope)]);
+    }),
+  );

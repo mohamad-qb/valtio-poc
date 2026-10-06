@@ -24,16 +24,31 @@ export const PRODUCT_DATA_PREFIX = `${GROUPS}.$GROUP_ID.${PRODUCTS}.$PRODUCT_ID.
 /** A path into a product's data, written from the deal's root as the original app's configs write it. */
 export type ProductPath<Path extends string> = `groups.$GROUP_ID.products.$PRODUCT_ID.data.${Path}`;
 
-/** What a rule can listen to: a path in its own product's data, or a deal key (`isInternal`, `notionalCcy`, …). */
-export type RulePath<Data> = ProductPath<DeepPath<Data>> | DealKey;
+/** Where a product's group is, from the deal's root. */
+const GROUP_PREFIX = `${GROUPS}.$GROUP_ID.` as const;
+
+/** The group's type. A group's type and products are fixed at creation. */
+export const GROUP_TYPE_PATH = `${GROUP_PREFIX}groupType` as const;
+
+/** A value across every product of the group (`*`), its own included, in display order: read as a list. */
+export const GROUP_PRODUCTS_PREFIX = `${GROUP_PREFIX}${PRODUCTS}.*.${DATA}.`;
+
+/** What a rule can read of its group: its type, or a value across all its products. */
+export type GroupPath<Data> = typeof GROUP_TYPE_PATH | `groups.$GROUP_ID.products.*.data.${DeepPath<Data>}`;
+
+/**
+ * What a rule can listen to: a path in its own product's data, its group
+ * (`GroupPath`), or a deal key (`isInternal`, `notionalCcy`, …).
+ */
+export type RulePath<Data> = ProductPath<DeepPath<Data>> | GroupPath<Data> | DealKey;
 
 /** A rule's view of its product and deal: values by the paths it listens to, and only those. */
 export type RuleContext<Path extends string = string> = { read: (path: Path) => unknown };
 
 /**
  * A validation rule, reported on the field it is listed under. It reads
- * values only through `read`, by the paths in `listen`: every store re-checks
- * it exactly when one of them changes. Reading a path it doesn't listen to
+ * values only through `read`, by the paths in `listen` (its product, its
+ * group, the deal): every store re-checks it exactly when one of them changes. Reading a path it doesn't listen to
  * throws, so a missing one fails the first test that runs the rule.
  */
 export type ValidationRule<Data> = {
@@ -42,8 +57,12 @@ export type ValidationRule<Data> = {
   isValid: (context: RuleContext<RulePath<Data>>) => boolean;
 };
 
-/** Where a listened path's value comes from: the product's data, or the deal. */
-export type RuleInput = { path: string; dataPath: string } | { path: string; dealKey: DealKey };
+/** Where a listened path's value comes from: the product's data, its group, or the deal. */
+export type RuleInput =
+  | { path: string; dataPath: string }
+  | { path: string; groupType: true }
+  | { path: string; groupDataPath: string }
+  | { path: string; dealKey: DealKey };
 
 /** A rule as the stores run it: each path it listens to, resolved. */
 export type CompiledRule = {
@@ -97,13 +116,17 @@ const toDataPath = (path: string) => {
   return path.slice(PRODUCT_DATA_PREFIX.length);
 };
 
-/** A rule with what it listens to resolved; a path that's neither the product's nor the deal's throws. */
+/** A rule with what it listens to resolved; a path that's not the product's, its group's or the deal's throws. */
 const compileRule = (label: string, fieldId: string, rule: Omit<CompiledRule, "inputs">): CompiledRule => ({
   ...rule,
-  inputs: rule.listen.map((path) => {
+  inputs: rule.listen.map((path): RuleInput => {
     if (path.startsWith(PRODUCT_DATA_PREFIX)) return { path, dataPath: toDataPath(path) };
+    if (path === GROUP_TYPE_PATH) return { path, groupType: true };
+    if (path.startsWith(GROUP_PRODUCTS_PREFIX)) return { path, groupDataPath: path.slice(GROUP_PRODUCTS_PREFIX.length) };
     if (isDealKey(path)) return { path, dealKey: path };
-    throw new Error(`${label}: a rule on ${fieldId} listens to "${path}", which is neither in a product's data nor a deal key`);
+    throw new Error(
+      `${label}: a rule on ${fieldId} listens to "${path}", which is neither in its product's data, its group, nor a deal key`,
+    );
   }),
 });
 

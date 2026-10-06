@@ -19,7 +19,7 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
-import type { DealKey, ReadDeal } from "@shared/dealKeys.ts";
+import type { DealKey } from "@shared/dealKeys.ts";
 import {
   type DealSettingsState,
   initialDealSettings,
@@ -49,6 +49,7 @@ import {
   createSpotPriceStream,
 } from "@shared/spotPriceStream.ts";
 import {
+  type RuleScope,
   fieldIssues,
   noIssues,
   validationInputs,
@@ -131,27 +132,40 @@ const dealNodeAt = (deal$: Observable<DealState>, key: DealKey) =>
 
 /**
  * One computed per field. Each reads (so tracks) only the leaves its rules
- * read, in the product and in the deal, then validates the plain data: an
- * edit re-validates only the fields that depend on it, and only when one of
- * them is observed.
+ * read, in the product, its group and the deal, then validates the plain
+ * data: an edit re-validates only the fields that depend on it, and only
+ * when one of them is observed.
  */
 const createValidation = (
   definition: GenericProductDefinition,
   data$: Observable<ProductData>,
   deal$: Observable<DealState>,
+  groupId: string,
 ): ProductValidation => {
-  const readDeal: ReadDeal = (key) => dealNodeAt(deal$, key).peek();
+  const group$ = deal$.groups[groupId];
+  const scope: RuleScope = {
+    readDeal: (key) => dealNodeAt(deal$, key).peek(),
+    readGroup: () => {
+      const group = group$.peek();
+      return { groupType: group.groupType, products: group.productIds.map((id) => group.products[id].data) };
+    },
+  };
   const fieldIds = Object.keys(definition.fieldPaths) as ProductFieldId[];
   const issues = Object.fromEntries(
     fieldIds.map((fieldId) => [
       fieldId,
       computed(() => {
-        const { dataPaths, dealKeys } = validationInputs(definition, fieldId);
+        const { dataPaths, groupDataPaths, dealKeys } = validationInputs(definition, fieldId);
         for (const path of dataPaths) nodeAt(data$, path).get();
         for (const key of dealKeys) dealNodeAt(deal$, key).get();
+        // a group's products are fixed: track each one's leaves the rules read across the group
+        const groupProductIds = groupDataPaths.length ? (group$.productIds.peek() ?? []) : [];
+        for (const productId of groupProductIds) {
+          for (const path of groupDataPaths) nodeAt(group$.products[productId].data, path).get();
+        }
         // a removed product's computeds still hear its leaves go: nothing left to validate
         const data = data$.peek();
-        return data ? fieldIssues(definition, fieldId, data, readDeal) : noIssues;
+        return data ? fieldIssues(definition, fieldId, data, scope) : noIssues;
       }),
     ]),
   ) as Record<ProductFieldId, Observable<readonly $ZodIssue[]>>;
@@ -251,7 +265,7 @@ export const createDealStore = (
       // ready before the deal lists the product: its computeds are read from then on
       validations.set(
         product.id,
-        createValidation(definition, data$Of(group.id, product.id), deal$),
+        createValidation(definition, data$Of(group.id, product.id), deal$, group.id),
       );
     });
     batch(() => {

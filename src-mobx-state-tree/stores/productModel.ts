@@ -6,8 +6,11 @@ import { productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import { type ProductData, type ProductType, definitionOf } from "@shared/products/productRegistry.ts";
 import { type ProductWrite, definitionOfData, planProductWrites } from "@shared/products/productWrites.ts";
-import { type FieldIssues, productIssues } from "@shared/validation.ts";
+import type { GroupType } from "@shared/groups.ts";
+import { type FieldIssues, type RuleScope, productIssues } from "@shared/validation.ts";
 
+/** Where a product's group and deal are, up its tree: product → products → group → groups → deal. */
+const GROUP_DEPTH = 2;
 const DEAL_DEPTH = 4;
 
 /**
@@ -22,13 +25,21 @@ export const Product = types
     data: types.frozen<ProductData>(),
   })
   .views((self) => {
-    /** The deal's values, read where the product sits: product → products → group → groups → deal. */
     const readDeal: ReadDeal = (key) =>
       hasParent(self, DEAL_DEPTH) ? getParent<DealFieldsState & DealSettingsState>(self, DEAL_DEPTH)[key] : undefined;
+    const scope: RuleScope = {
+      readDeal,
+      readGroup: () => {
+        // a product outside a group is alone in it
+        if (!hasParent(self, GROUP_DEPTH)) return { groupType: "VanillaGroup", products: [self.data] };
+        const group = getParent<{ groupType: GroupType; products: readonly { data: ProductData }[] }>(self, GROUP_DEPTH);
+        return { groupType: group.groupType, products: group.products.map((product) => product.data) };
+      },
+    };
     return {
-      /** Every field's issues; validated again when this product's data, or a deal value a rule reads, changes. */
+      /** Every field's issues; validated again when this product's data, or what a rule reads of its group or deal, changes. */
       get issues(): FieldIssues {
-        return productIssues(definitionOfData(self.data), self.data, readDeal);
+        return productIssues(definitionOfData(self.data), self.data, scope);
       },
       get hasValidationErrors() {
         return Object.keys(this.issues).length > 0;
