@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import { type BoolLogic, mapBoolLogicPaths } from "../boolLogic.ts";
 import type { DealFieldsState } from "../dealFields.ts";
+import { type DealKey, isDealKey } from "../dealKeys.ts";
 import { type ProductFieldId, fields as gridRows } from "../fields.ts";
 import type { DeepPath, LeafPath } from "../lib/path.ts";
 import { DATA, GROUPS, PRODUCTS } from "../paths.ts";
@@ -17,21 +18,40 @@ export type DerivedField<Data> = {
   write?: (value: unknown) => { fieldId: ProductFieldId; value: unknown };
 };
 
-/**
- * A rule across fields, reported on the field it is listed under.
- * `dependsOn` names the other fields it reads, so it re-runs when they change.
- */
-export type CrossFieldRule<Data> = {
-  dependsOn: readonly ProductFieldId[];
-  message: string;
-  isValid: (data: Data) => boolean;
-};
-
 /** Where any product's data lives in the deal: `$GROUP_ID` and `$PRODUCT_ID` stand for its own ids. */
 export const PRODUCT_DATA_PREFIX = `${GROUPS}.$GROUP_ID.${PRODUCTS}.$PRODUCT_ID.${DATA}.`;
 
 /** A path into a product's data, written from the deal's root as the original app's configs write it. */
 export type ProductPath<Path extends string> = `groups.$GROUP_ID.products.$PRODUCT_ID.data.${Path}`;
+
+/** What a rule can listen to: a path in its own product's data, or a deal key (`isInternal`, `notionalCcy`, …). */
+export type RulePath<Data> = ProductPath<DeepPath<Data>> | DealKey;
+
+/** A rule's view of its product and deal: values by the paths it listens to, and only those. */
+export type RuleContext<Path extends string = string> = { read: (path: Path) => unknown };
+
+/**
+ * A validation rule, reported on the field it is listed under. It reads
+ * values only through `read`, by the paths in `listen`: every store re-checks
+ * it exactly when one of them changes. Reading a path it doesn't listen to
+ * throws, so a missing one fails the first test that runs the rule.
+ */
+export type ValidationRule<Data> = {
+  listen: readonly RulePath<Data>[];
+  message: string | ((context: RuleContext<RulePath<Data>>) => string);
+  isValid: (context: RuleContext<RulePath<Data>>) => boolean;
+};
+
+/** Where a listened path's value comes from: the product's data, or the deal. */
+export type RuleInput = { path: string; dataPath: string } | { path: string; dealKey: DealKey };
+
+/** A rule as the stores run it: each path it listens to, resolved. */
+export type CompiledRule = {
+  listen: readonly string[];
+  inputs: readonly RuleInput[];
+  message: string | ((context: RuleContext) => string);
+  isValid: (context: RuleContext) => boolean;
+};
 
 /**
  * One grid row of a product, in the original app's config shape
@@ -58,7 +78,7 @@ export type ProductFieldConfig<Data> = {
 export type ProductDefinition<Data extends { productType: string }> = {
   label: string;
   fields: readonly ProductFieldConfig<Data>[];
-  rules?: Partial<Record<ProductFieldId, readonly CrossFieldRule<Data>[]>>;
+  rules?: Partial<Record<ProductFieldId, readonly ValidationRule<Data>[]>>;
   derived?: Partial<Record<ProductFieldId, DerivedField<Data>>>;
   /** A new product's data, starting from the deal's values. */
   createData: (deal: DealFieldsState) => Data;
@@ -77,14 +97,26 @@ const toDataPath = (path: string) => {
   return path.slice(PRODUCT_DATA_PREFIX.length);
 };
 
+/** A rule with what it listens to resolved; a path that's neither the product's nor the deal's throws. */
+const compileRule = (label: string, fieldId: string, rule: Omit<CompiledRule, "inputs">): CompiledRule => ({
+  ...rule,
+  inputs: rule.listen.map((path) => {
+    if (path.startsWith(PRODUCT_DATA_PREFIX)) return { path, dataPath: toDataPath(path) };
+    if (isDealKey(path)) return { path, dealKey: path };
+    throw new Error(`${label}: a rule on ${fieldId} listens to "${path}", which is neither in a product's data nor a deal key`);
+  }),
+});
+
 /**
  * A product definition, compiled from its field configs into what the
- * stores and the grid read: each row's path, schema and visibility, relative
- * to the product's data. A config that can't work (a path outside the
- * product, a row listed twice or missing) throws, so it fails on load.
+ * stores and the grid read: each row's path, schema and visibility, and each
+ * rule's inputs, relative to the product's data. A config that can't work (a
+ * path outside the product, a row listed twice or missing, a rule listening
+ * to something unknown) throws, so it fails on load.
  */
 export const defineProduct = <Data extends { productType: string }>({
   fields,
+  rules = {},
   ...definition
 }: ProductDefinition<Data>) => {
   const fieldPaths = {} as Record<ProductFieldId, LeafPath<Data>>;
@@ -102,5 +134,11 @@ export const defineProduct = <Data extends { productType: string }>({
   }
   const missing = productFieldIds.filter((id) => !(id in fieldPaths));
   if (missing.length) throw new Error(`${definition.label}: no field for ${missing.join(", ")}`);
-  return { ...definition, fieldPaths, validation, visibility };
+  const compiledRules = Object.fromEntries(
+    Object.entries(rules).map(([fieldId, fieldRules]) => [
+      fieldId,
+      (fieldRules as readonly CompiledRule[]).map((rule) => compileRule(definition.label, fieldId, rule)),
+    ]),
+  ) as Partial<Record<ProductFieldId, readonly CompiledRule[]>>;
+  return { ...definition, rules: compiledRules, fieldPaths, validation, visibility };
 };

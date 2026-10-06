@@ -1,31 +1,35 @@
-import { createEvent, createStore } from "effector";
-import { keyval } from "@effector/model";
+import { type Store, combine, createEvent, createStore } from "effector";
+import type { ReadDeal } from "@shared/dealKeys.ts";
 import type { Option } from "@shared/options/optionsSource.ts";
 import type { ProductData, ProductUi } from "@shared/products/productRegistry.ts";
 import {
   type OptionsRequest,
   type ProductWrite,
-  definitionOfData,
   planProductWrites,
   reconcileWrites,
 } from "@shared/products/productWrites.ts";
-import { type FieldIssues, productIssues } from "@shared/validation.ts";
+import { type FieldIssues, createIssuesMemo } from "@shared/validation.ts";
 
 const noIssues: FieldIssues = {};
 
+// product data is never changed in place: issues are cached by it, and by the deal values rules read
+const validate = createIssuesMemo();
+
 /**
  * A product, as one item of an `@effector/model` collection: its own data
- * store, its issues derived from it, and its own api events. A write to one
+ * store, its issues derived from it (and from the deal values its rules
+ * read: `$readDeal`, its deal's), and its own api events. A write to one
  * product touches that product's stores only (by the shared rules); the
  * collection's `$items` view is rebuilt from them, keeping every other item
- * as the same object.
+ * as the same object. Each group builds its collection from it
+ * (`keyval(() => createProduct($readDeal))`).
  */
-export const productsModel = keyval(() => {
+export const createProduct = ($readDeal: Store<ReadDeal>) => {
   const $id = createStore("");
   const $ui = createStore<ProductUi>({ title: "", index: 0 });
   const $data = createStore<ProductData | null>(null);
-  // re-validated only when this product's data changes
-  const $issues = $data.map((data) => (data ? productIssues(definitionOfData(data), data) : noIssues));
+  // re-validated when this product's data changes, or a deal value (only the fields that read it)
+  const $issues = combine($data, $readDeal, (data, readDeal) => (data ? validate(data, readDeal) : noIssues));
 
   /** Writes into this product, in order. */
   const write = createEvent<readonly ProductWrite[]>();
@@ -38,8 +42,8 @@ export const productsModel = keyval(() => {
     );
 
   return {
-    key: "id",
+    key: "id" as const,
     state: { id: $id, ui: $ui, data: $data, issues: $issues },
     api: { write, reconcileOptions },
   };
-});
+};

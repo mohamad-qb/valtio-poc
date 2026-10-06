@@ -19,9 +19,11 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
+import type { DealKey, ReadDeal } from "@shared/dealKeys.ts";
 import {
   type DealSettingsState,
   initialDealSettings,
+  isDealSetting,
 } from "@shared/dealSettings.ts";
 import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
 import { type ProductFieldId, dealOptionsRequests } from "@shared/fields.ts";
@@ -49,7 +51,7 @@ import {
 import {
   fieldIssues,
   noIssues,
-  validationDependencies,
+  validationInputs,
 } from "@shared/validation.ts";
 import { loadOptions, options$ } from "./optionsStore.ts";
 
@@ -123,29 +125,33 @@ type ProductValidation = {
   hasErrors$: Observable<boolean>;
 };
 
+/** A deal value's observable, by key: `settings.isInternal`, `dealFields.notionalCcy`, … */
+const dealNodeAt = (deal$: Observable<DealState>, key: DealKey) =>
+  nodeAt(deal$, `${isDealSetting(key) ? "settings" : "dealFields"}.${key}`);
+
 /**
  * One computed per field. Each reads (so tracks) only the leaves its rules
- * read, then validates the plain data: an edit re-validates only the fields
- * that depend on it, and only when one of them is observed.
+ * read, in the product and in the deal, then validates the plain data: an
+ * edit re-validates only the fields that depend on it, and only when one of
+ * them is observed.
  */
 const createValidation = (
   definition: GenericProductDefinition,
   data$: Observable<ProductData>,
+  deal$: Observable<DealState>,
 ): ProductValidation => {
+  const readDeal: ReadDeal = (key) => dealNodeAt(deal$, key).peek();
   const fieldIds = Object.keys(definition.fieldPaths) as ProductFieldId[];
   const issues = Object.fromEntries(
     fieldIds.map((fieldId) => [
       fieldId,
       computed(() => {
-        for (const watched of [
-          fieldId,
-          ...validationDependencies(definition, fieldId),
-        ]) {
-          nodeAt(data$, definition.fieldPaths[watched]).get();
-        }
+        const { dataPaths, dealKeys } = validationInputs(definition, fieldId);
+        for (const path of dataPaths) nodeAt(data$, path).get();
+        for (const key of dealKeys) dealNodeAt(deal$, key).get();
         // a removed product's computeds still hear its leaves go: nothing left to validate
         const data = data$.peek();
-        return data ? fieldIssues(definition, fieldId, data) : noIssues;
+        return data ? fieldIssues(definition, fieldId, data, readDeal) : noIssues;
       }),
     ]),
   ) as Record<ProductFieldId, Observable<readonly $ZodIssue[]>>;
@@ -245,7 +251,7 @@ export const createDealStore = (
       // ready before the deal lists the product: its computeds are read from then on
       validations.set(
         product.id,
-        createValidation(definition, data$Of(group.id, product.id)),
+        createValidation(definition, data$Of(group.id, product.id), deal$),
       );
     });
     batch(() => {

@@ -64,6 +64,19 @@ for (const app of apps) {
       await expect(await cell(page, "Expiry Date", 1)).toHaveText(dateInDays(5));
     });
 
+    test("Strike takes 3 characters on an internal deal, 6 on an external one", async ({ page }) => {
+      await editCell(page, "Strike", 1, "12345");
+      await expect(await cell(page, "Strike", 1)).toHaveClass(ERROR);
+      // only the deal changes: the products' cells are checked again
+      await editCell(page, "Internal", "settings", "No");
+      await expect(await cell(page, "Strike", 1)).not.toHaveClass(ERROR);
+      await editCell(page, "Strike", 2, "1234567");
+      await expect(await cell(page, "Strike", 2)).toHaveClass(ERROR);
+      await editCell(page, "Internal", "settings", "Yes");
+      await expect(await cell(page, "Strike", 1)).toHaveClass(ERROR);
+      await expect(await cell(page, "Strike", 3)).not.toHaveClass(ERROR); // empty
+    });
+
     test("Delivery Date can't be before Expiry Date", async ({ page }) => {
       for (const n of [1, 2]) {
         await editCell(page, "Expiry Date", n, "2999-02-10");

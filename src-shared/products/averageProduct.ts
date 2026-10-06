@@ -38,6 +38,13 @@ export type AverageProductStore = {
 const ccySchema = z.string().max(6, "Must be at most 6 characters");
 const dateSchema = optionalString(z.iso.date("Must be a valid date"));
 
+const STRIKE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.strike";
+const EXPIRY_DATE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.base.expiryDate";
+const DELIVERY_DATE = "groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.base.deliveryDate";
+
+/** Internal deals take a shorter strike than external ones. */
+const maxStrikeLength = (isInternal: unknown) => (isInternal ? 3 : 6);
+
 export const averageProduct = defineProduct<AverageProductStore["data"]>({
   label: "Average Product",
 
@@ -60,7 +67,8 @@ export const averageProduct = defineProduct<AverageProductStore["data"]>({
     {
       props: { path: "groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.strike" },
       position: { field: "strike" },
-      validation: { schema: ["groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.strike", z.string().max(3, "Must be at most 3 characters")] },
+      // its length depends on the deal (a rule below)
+      validation: { schema: ["groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.strike", z.string()] },
     },
     {
       props: { path: "groups.$GROUP_ID.products.$PRODUCT_ID.data.avroCommon.callPut" },
@@ -125,10 +133,17 @@ export const averageProduct = defineProduct<AverageProductStore["data"]>({
   rules: {
     deliveryDate: [
       {
-        dependsOn: ["expiryDate"],
+        listen: [DELIVERY_DATE, EXPIRY_DATE],
         message: "Delivery date can't be before expiry date",
-        isValid: ({ avroCommon: { base } }) =>
-          isOnOrAfter(base.deliveryDate, base.expiryDate),
+        isValid: ({ read }) => isOnOrAfter(String(read(DELIVERY_DATE)), String(read(EXPIRY_DATE))),
+      },
+    ],
+    strike: [
+      {
+        // a rule on deal data: re-checked whenever the deal's Internal setting changes
+        listen: [STRIKE, "isInternal"],
+        message: ({ read }) => `Must be at most ${maxStrikeLength(read("isInternal"))} characters`,
+        isValid: ({ read }) => String(read(STRIKE)).length <= maxStrikeLength(read("isInternal")),
       },
     ],
   },

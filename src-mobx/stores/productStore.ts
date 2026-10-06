@@ -1,5 +1,7 @@
 import { observable } from "mobx";
 import type { DealFieldsState } from "@shared/dealFields.ts";
+import { dealReader } from "@shared/dealKeys.ts";
+import type { DealSettingsState } from "@shared/dealSettings.ts";
 import type { ProductFieldId } from "@shared/fields.ts";
 import { getValueByPath, resolveParent } from "@shared/lib/path.ts";
 import { uuid } from "@shared/lib/uuid.ts";
@@ -53,11 +55,13 @@ const withDerivedFields = (
  */
 export const createProduct = (
   productType: ProductType,
-  defaults: DealFieldsState,
+  deal: DealFieldsState & DealSettingsState,
   ui: ProductUi,
   sourceData?: ProductData,
 ): Product => {
   const definition = definitionOf(productType);
+  // read through the deal's observables: a rule's computed follows the deal keys it reads
+  const readDeal = dealReader(deal, deal);
   const read = (fieldId: ProductFieldId) => getValueByPath(product.data, definition.fieldPaths[fieldId]);
 
   const fields = Object.fromEntries(
@@ -65,7 +69,7 @@ export const createProduct = (
       fieldId,
       createFieldModel({
         read: () => read(fieldId),
-        issues: () => fieldIssues(definition, fieldId, product.data),
+        issues: () => fieldIssues(definition, fieldId, product.data, readDeal),
         readOnly: isReadOnly(definition, fieldId),
       }),
     ]),
@@ -75,7 +79,7 @@ export const createProduct = (
     {
       id: uuid(),
       ui,
-      data: withDerivedFields(definition, sourceData ?? definition.createData(defaults), () => product),
+      data: withDerivedFields(definition, sourceData ?? definition.createData(deal), () => product),
       fields,
       get hasValidationErrors() {
         return Object.values(fields).some((field) => field.issues.length > 0);

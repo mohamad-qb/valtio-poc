@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { type DealReducer, type DealState, runDealLogic } from "@shared/dealLogic/changes.ts";
 import { initialDealFields } from "@shared/dealFields.ts";
+import { dealReader } from "@shared/dealKeys.ts";
 import { initialDealSettings } from "@shared/dealSettings.ts";
-import { defineProduct } from "@shared/products/productDefinition.ts";
+import { type RuleContext, defineProduct } from "@shared/products/productDefinition.ts";
+import type { GenericProductDefinition } from "@shared/products/productRegistry.ts";
 import { vanillaProduct } from "@shared/products/vanillaProduct.ts";
+import { fieldIssues } from "@shared/validation.ts";
 import { type DealAdapter, appNames, createAdapter } from "./support/adapters.ts";
 import { installFakeApi } from "./support/fakeApi.ts";
 
@@ -105,5 +108,20 @@ describe("field configs: defineProduct", () => {
         { props: { path: "optionsCommon.strike" }, position: { field: "notionalCcy" }, validation: { schema: ["x", z.string()] } },
       ]),
     ).toThrow(`"optionsCommon.strike" isn't in a product's data`);
+  });
+
+  it("a rule listens to its product's data or the deal, and reads only what it listens to", () => {
+    const withRule = (rule: unknown) => () =>
+      defineProduct({ ...config, label: "Test", fields: vanillaFields(), rules: { strike: [rule] } } as never) as unknown as GenericProductDefinition;
+    expect(withRule({ listen: ["groups.$GROUP_ID.ui.title"], message: "x", isValid: () => true })).toThrow(
+      `Test: a rule on strike listens to "groups.$GROUP_ID.ui.title", which is neither in a product's data nor a deal key`,
+    );
+
+    // listens to Internal, reads the hedge type: fails the first time it runs, in every app
+    const sneaky = withRule({ listen: ["isInternal"], message: "x", isValid: ({ read }: RuleContext) => read("hedgeType") === "a" })();
+    const data = sneaky.createData(initialDealFields);
+    expect(() => fieldIssues(sneaky, "strike", data, dealReader(initialDealFields, initialDealSettings))).toThrow(
+      'A validation rule read "hedgeType" without listening to it',
+    );
   });
 });

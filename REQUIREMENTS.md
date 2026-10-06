@@ -85,7 +85,7 @@ dates, `NaN` for numbers (shown as an empty cell, never 0).
 | Settlement Style | broadcast, dropdown | Cash or Delivery (default Delivery) |
 | Settlement Ccy | broadcast | at most 6 characters; shown and validated only for Cash |
 | Fixing Source | broadcast, async dropdown | exists only for Cash (§7) |
-| Strike | broadcast | at most 3 characters |
+| Strike | broadcast | at most 3 characters on an internal deal, 6 on an external one (a rule on deal data, F8) |
 | Call / Put | broadcast | Call or Put |
 | Buy / Sell | broadcast | Buy or Sell |
 | Ccy Pair | broadcast | 6 uppercase letters, e.g. EURUSD |
@@ -101,7 +101,8 @@ dates, `NaN` for numbers (shown as an empty cell, never 0).
 | F4 | **Expiry Days** is the number of days until Expiry Date. It is writable: typing N sets Expiry Date to today + N. | deal › "derives Expiry Days…"; e2e/fields › "Expiry Days follows Expiry Date…" |
 | F5 | **Delivery Date can't be before Expiry Date.** The check reruns when either changes, including from a deal broadcast. | deal › "checks Delivery Date against Expiry Date", "re-checks the date rule when the deal broadcasts a date"; e2e/fields |
 | F6 | **Visibility:** Settlement Ccy shows only while the style is Cash. Hidden, its data is kept but not validated. | productConfig › "shows and validates a field only while its visibility condition holds" |
-| F7 | A product config that can't work fails at load: a missing field, a field listed twice, a path not in the data. | productConfig › "fails on load for a config that can't work" |
+| F7 | A product config that can't work fails at load: a missing field, a field listed twice, a path not in the data, a rule listening to something that's neither the product's data nor a deal key. | productConfig › "fails on load for a config that can't work", "a rule listens to its product's data or the deal…" |
+| F8 | **Rules can read the deal.** A product's validation rule declares what it reads (`listen`): paths in its own product's data and deal keys (Notional Ccy/Amount, Premium Ccy, Internal, Hedge Type). It is re-checked exactly when one of them changes, a deal change included, and its cells repaint. Reading a path it doesn't listen to throws. First use: Strike's length depends on Internal. | deal › "checks Strike against the deal…"; grid › "a deal setting a rule reads repaints the cells it validates…"; productConfig › "a rule listens to its product's data or the deal…"; e2e/fields › "Strike takes 3 characters on an internal deal…" |
 
 ## 5. Deal settings
 

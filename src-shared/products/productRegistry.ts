@@ -3,7 +3,7 @@ import type { DealFieldsState } from "../dealFields.ts";
 import type { ProductFieldId } from "../fields.ts";
 import { getValueByPath } from "../lib/path.ts";
 import { type AverageProductStore, averageProduct } from "./averageProduct.ts";
-import type { CrossFieldRule, DerivedField, FieldValidation, ProductUi } from "./productDefinition.ts";
+import type { CompiledRule, DerivedField, FieldValidation, ProductUi } from "./productDefinition.ts";
 import { type VanillaProductStore, vanillaProduct } from "./vanillaProduct.ts";
 
 /**
@@ -29,7 +29,7 @@ export type GenericProductDefinition = {
   fieldPaths: Record<ProductFieldId, string>;
   validation: Partial<Record<ProductFieldId, FieldValidation>>;
   visibility: Partial<Record<ProductFieldId, BoolLogic>>;
-  rules?: Partial<Record<ProductFieldId, readonly CrossFieldRule<ProductData>[]>>;
+  rules: Partial<Record<ProductFieldId, readonly CompiledRule[]>>;
   derived?: Partial<Record<ProductFieldId, DerivedField<ProductData>>>;
   createData: (deal: DealFieldsState) => ProductData;
 };

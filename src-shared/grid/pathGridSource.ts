@@ -4,6 +4,7 @@ import { type ProductFieldId, asyncOptionFields, fields } from "../fields.ts";
 import type { PathDeal } from "../pathDeal.ts";
 import { type PathWrite, productPath } from "../paths.ts";
 import { definitionOfData } from "../products/productWrites.ts";
+import { fieldsReadingDeal } from "../validation.ts";
 import {
   type CellKey,
   type CellRef,
@@ -67,6 +68,17 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
     );
   };
 
+  /** Every product cell whose validation reads the deal: a deal value changed, so its error may have. */
+  const cellsReadingDeal = (): CellRef[] =>
+    deal.getGroups().flatMap((group) =>
+      group.productIds.flatMap((productId) => {
+        const product = deal.getProduct(productId);
+        return product
+          ? fieldsReadingDeal(definitionOfData(product.data)).map((fieldId) => ({ columnId: productId, fieldId }))
+          : [];
+      }),
+    );
+
   const subscribeColumns: GridSource["subscribeColumns"] = (onChange) =>
     deal.subscribe((change) => {
       if (change.kind === "groups") onChange();
@@ -84,9 +96,12 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
           case "products":
             return notify(change.ids.flatMap(productCells));
           case "dealFields":
-            return notify(syncedFieldIds.map((fieldId) => ({ columnId: DEAL_COLUMN_ID, fieldId })));
+            return notify([
+              ...syncedFieldIds.map((fieldId) => ({ columnId: DEAL_COLUMN_ID, fieldId })),
+              ...cellsReadingDeal(),
+            ]);
           case "settings":
-            return notify(settingCells);
+            return notify([...settingCells, ...cellsReadingDeal()]);
           case "options":
             return notify(
               getColumns().flatMap(({ id }) => asyncOptionFields.map(({ fieldId }) => ({ columnId: id, fieldId }))),

@@ -1,8 +1,7 @@
 import { type Getter, type PrimitiveAtom, atom } from "jotai/vanilla";
-import type { DealFieldsState } from "@shared/dealFields.ts";
 import { type GroupType, groupDefinitions, productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
-import { type ProductStore, createProductStore } from "./productStore.ts";
+import { type DealAtoms, type ProductStore, createProductStore } from "./productStore.ts";
 
 export type GroupStore = {
   id: string;
@@ -19,7 +18,7 @@ export type GroupStore = {
  */
 export const createGroupStore = (
   get: Getter,
-  dealFields: DealFieldsState,
+  deal: DealAtoms,
   groupType: GroupType,
   source?: GroupStore,
 ): GroupStore => {
@@ -31,10 +30,12 @@ export const createGroupStore = (
     productIds: [],
   };
 
+  const dealFields = get(deal.dealFieldsAtom);
   groupDefinitions[groupType].productTypes.forEach((productType, index) => {
     const productId = uuid();
     const sourceProduct = source?.products[source.productIds[index]];
     groupStore.products[productId] = createProductStore(
+      deal,
       dealFields,
       productType,
       productUi(productType, index),

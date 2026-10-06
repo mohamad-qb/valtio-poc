@@ -122,6 +122,25 @@ describe.each(appNames)("%s deal", (app) => {
     expect(flagged("deliveryDate")).toBe(false);
   });
 
+  it("checks Strike against the deal: 3 characters for internal deals, 6 for external", () => {
+    const setInternal = (isInternal: boolean) => deal.deal().writePaths([{ path: "isInternal", value: isInternal }]);
+    const strikeIssues = () => [0, 3].map((i) => deal.issues(i, "strike")); // a vanilla and an average product
+    deal.sync("notionalCcy", "USD"); // the default is invalid: only Strike can fail now
+    deal.commit(0, "strike", "12345");
+    deal.commit(3, "strike", "12345");
+    expect(strikeIssues()).toEqual([["Must be at most 3 characters"], ["Must be at most 3 characters"]]);
+    expect(deal.hasValidationErrors()).toBe(true);
+
+    setInternal(false); // only the deal changed: its products are checked again
+    expect(strikeIssues()).toEqual([[], []]);
+    expect(deal.hasValidationErrors()).toBe(false);
+    deal.commit(0, "strike", "1234567");
+    expect(deal.issues(0, "strike")).toEqual(["Must be at most 6 characters"]);
+
+    setInternal(true);
+    expect(strikeIssues()).toEqual([["Must be at most 3 characters"], ["Must be at most 3 characters"]]);
+  });
+
   it("re-checks the date rule when the deal broadcasts a date", () => {
     deal.commit(0, "deliveryDate", "2999-03-02");
     deal.broadcast("expiryDate", "2999-06-01");

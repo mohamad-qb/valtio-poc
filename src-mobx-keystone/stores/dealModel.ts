@@ -26,6 +26,7 @@ import {
 import type { Option } from "@shared/options/optionsSource.ts";
 import { createSpotPriceStream } from "@shared/spotPriceStream.ts";
 import { type Group, newGroup } from "./groupModel.ts";
+import { dealContext } from "./productModel.ts";
 import { optionsStore } from "./optionsStore.ts";
 
 /** What a deal needs from the app-wide developer settings. */
@@ -85,6 +86,8 @@ export class Deal extends Model({
 
   /** On creation: the deal column's own options (its default parameters). */
   protected onInit() {
+    // every product under the deal reads its values through this
+    dealContext.set(this, this);
     this.loadOptions(dealOptionsRequests);
   }
 

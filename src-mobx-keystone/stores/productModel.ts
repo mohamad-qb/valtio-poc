@@ -1,6 +1,7 @@
 import { computed } from "mobx";
-import { Model, idProp, model, modelAction, prop } from "mobx-keystone";
+import { Model, createContext, idProp, model, modelAction, prop } from "mobx-keystone";
 import type { DealFieldsState } from "@shared/dealFields.ts";
+import type { DealSettingsState } from "@shared/dealSettings.ts";
 import { productUi } from "@shared/groups.ts";
 import { deleteValueByPath, setValueByPath } from "@shared/lib/path.ts";
 import {
@@ -15,6 +16,9 @@ import {
 } from "@shared/products/productWrites.ts";
 import { type FieldIssues, productIssues } from "@shared/validation.ts";
 
+/** The deal a product is in, provided by the deal to everything under it: rules read the deal through it. */
+export const dealContext = createContext<DealFieldsState & DealSettingsState>();
+
 /**
  * A product: its data is a plain nested object, as the app being migrated
  * keeps it, and keystone makes every leaf of it observable. Only actions
@@ -26,9 +30,10 @@ export class Product extends Model({
   title: prop<string>(),
   data: prop<ProductData>(),
 }) {
-  /** Every field's issues; validated again only when this product's data changes. */
+  /** Every field's issues; validated again when this product's data, or a deal value a rule reads, changes. */
   @computed get issues(): FieldIssues {
-    return productIssues(definitionOfData(this.data), this.data);
+    const deal = dealContext.get(this);
+    return productIssues(definitionOfData(this.data), this.data, (key) => deal?.[key]);
   }
 
   @computed get hasValidationErrors() {

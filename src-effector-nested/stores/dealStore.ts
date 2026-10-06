@@ -19,6 +19,7 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
+import { dealReader } from "@shared/dealKeys.ts";
 import { type DealSettingsState, hedgeTypesFor, initialDealSettings } from "@shared/dealSettings.ts";
 import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
@@ -84,8 +85,13 @@ export const createDealStore = (devtools: DealDevtools) => {
   // --- derived
   const $isInternal = $settings.map((settings) => settings.isInternal);
   const $hedgeTypes = $isInternal.map(hedgeTypesFor);
-  /** Issues per product, per field — only changed products are re-validated. */
-  const $validation = $groups.map((groups) => validateProducts(productsOf(groups)));
+  /**
+   * Issues per product, per field: re-validated when a product changes, or
+   * a deal value its rules read (only the fields that read it).
+   */
+  const $validation = combine($groups, $dealFields, $settings, (groups, dealFields, settings) =>
+    validateProducts(productsOf(groups), dealReader(dealFields, settings)),
+  );
   const $hasValidationErrors = $validation.map((validation) =>
     Object.values(validation).some((issues) => Object.keys(issues).length > 0),
   );

@@ -120,4 +120,17 @@ describe.each(appNames)("%s grid source", (app) => {
     await sleep(30); // Cash's options reloaded: 3 is one of them, so it stays
     expect(grid.getCell(first, "settlementFixingSource")?.value).toBe("3");
   });
+
+  it("a deal setting a rule reads repaints the cells it validates, and only those", async () => {
+    const [first] = productIds();
+    grid.write([{ columnId: first, fieldId: "strike", value: "12345" }]);
+    await sleep(5);
+    expect(grid.getCell(first, "strike")?.hasError).toBe(true); // internal: 3 characters at most
+    const { seen, stop } = watch();
+    grid.write([{ columnId: "settings", fieldId: "isInternal", value: "false" }]);
+    await sleep(5);
+    expect(grid.getCell(first, "strike")?.hasError).toBe(false); // external: 6
+    expect(seen()).toEqual([`${first}:strike`, "settings:hedgeType", "settings:isInternal"].sort());
+    stop();
+  });
 });

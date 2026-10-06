@@ -83,7 +83,7 @@ export const createPathDeal = (dealStore: DealStore): PathDeal => {
     writePaths: (writes) => dealStore.getState().actions.writePaths(writes),
     fieldIssues: (productId, fieldId) => {
       const found = findProduct(productId);
-      return (found && issuesOf(found.product.data)[fieldId]) ?? noIssues;
+      return (found && issuesOf(dealStore.getState(), found.product.data)[fieldId]) ?? noIssues;
     },
     getSettings: () => {
       const { isInternal, hedgeType } = dealStore.getState();

@@ -20,6 +20,7 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
+import { type ReadDeal, dealReader } from "@shared/dealKeys.ts";
 import { type DealSettingsState, hedgeTypesFor, initialDealSettings } from "@shared/dealSettings.ts";
 import { type DealProduct, readDealKey, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
@@ -38,7 +39,7 @@ import {
 import { createSpotPriceStream } from "@shared/spotPriceStream.ts";
 import type { FieldIssues } from "@shared/validation.ts";
 import { loadAllOptionsEffect, loadOptionsEffect } from "./optionsStore.ts";
-import { productsModel } from "./productModel.ts";
+import { createProduct } from "./productModel.ts";
 
 /** What a deal needs from the app-wide developer settings. */
 type DealDevtools = {
@@ -63,15 +64,17 @@ type ProductWrites = { productId: string; writes: ProductWrite[] };
  * and its products as a nested collection. Its api passes writes on to the
  * products they address.
  *
- * Each deal builds its collection from this function (`keyval(createGroup)`),
- * not by cloning a collection: a cloned model's `create` runs once more to
- * read its shape, with nested collections as placeholders that have no api.
+ * Each deal builds its collection from this function
+ * (`keyval(() => createGroup($readDeal))`), not by cloning a collection: a
+ * cloned model's `create` runs once more to read its shape, with nested
+ * collections as placeholders that have no api. `$readDeal` is the deal's
+ * values, for its products' validation.
  */
-const createGroup = () => {
+const createGroup = ($readDeal: Store<ReadDeal>) => {
   const $id = createStore("");
   const $groupType = createStore<GroupType>("VanillaGroup");
   const $ui = createStore({ title: "", index: 0 });
-  const products = keyval(productsModel);
+  const products = keyval(() => createProduct($readDeal));
 
   /** Each addressed product's writes: one api call for all of them. */
   const writeProducts = createEvent<readonly ProductWrites[]>();
@@ -127,11 +130,13 @@ export const createDealStore = (devtools: DealDevtools) => {
   };
 
   // --- state
-  const groups = keyval(createGroup);
-  const $groupsById = groups.$items as unknown as Store<GroupItem[]>;
-  const $order = createStore<string[]>([]);
   const $dealFields = createStore<DealFieldsState>(initialDealFields);
   const $settings = createStore<DealSettingsState>(initialDealSettings);
+  /** The deal's values as product rules read them: every product's issues follow it. */
+  const $readDeal = combine($dealFields, $settings, dealReader);
+  const groups = keyval(() => createGroup($readDeal));
+  const $groupsById = groups.$items as unknown as Store<GroupItem[]>;
+  const $order = createStore<string[]>([]);
 
   // --- derived
   /** The groups in display order. */

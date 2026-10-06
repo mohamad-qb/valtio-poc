@@ -1,14 +1,14 @@
 import type { DealFieldsState } from "@shared/dealFields.ts";
+import type { ReadDeal } from "@shared/dealKeys.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import {
   type AnyProductStore,
   type ProductType,
   type ProductUi,
   definitionOf,
-  productTypeOf,
 } from "@shared/products/productRegistry.ts";
 import { type ProductWrite, planProductWrites } from "@shared/products/productWrites.ts";
-import { type FieldIssues, productIssues } from "@shared/validation.ts";
+import { type FieldIssues, createIssuesMemo } from "@shared/validation.ts";
 
 /**
  * Products as plain, immutable data, driven by their declarations
@@ -45,21 +45,16 @@ export const withProductWrites = (product: ProductState, writes: readonly Produc
   return data === product.data ? product : ({ ...product, data } as ProductState);
 };
 
+const validate = createIssuesMemo();
+
 /**
  * Issues of every product. Product data is immutable, so results are cached
- * by data identity: only products that actually changed are re-validated.
+ * by data identity and the deal values the rules read: only products that
+ * changed are re-validated, and a deal change re-checks only the fields that
+ * read it.
  */
-const issuesCache = new WeakMap<object, FieldIssues>();
 export const validateProducts = (
   products: readonly ProductState[],
+  readDeal: ReadDeal,
 ): Record<string, FieldIssues> =>
-  Object.fromEntries(
-    products.map((product) => {
-      let issues = issuesCache.get(product.data);
-      if (!issues) {
-        issues = productIssues(definitionOf(productTypeOf(product.data)), product.data);
-        issuesCache.set(product.data, issues);
-      }
-      return [product.id, issues];
-    }),
-  );
+  Object.fromEntries(products.map((product) => [product.id, validate(product.data, readDeal)]));

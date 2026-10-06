@@ -37,6 +37,14 @@ is its own folder and HTML entry; everything library-independent lives in
   (`products/productWrites.ts`), validation (`validation.ts`), calculation
   state (`calc.ts`), async options (`options/optionsSource.ts`). An app only
   decides how to store the result and how to notice changes.
+- Validation rules (`rules` in a product config) read only through
+  `read(path)`, by the paths in their `listen`: the product's own data
+  (`groups.$GROUP_ID.products.$PRODUCT_ID.data.…`) or a deal key
+  (`isInternal`, `notionalCcy`, …). Reading anything else throws. Every app
+  re-checks a field when its `validationInputs` change, deal keys included:
+  tracked reads (MobX, Legend-State, Jotai), subscriptions (Valtio), or
+  `createIssuesMemo` for immutable data (Redux, Zustand, Effector). Group
+  paths and `*` wildcards aren't supported yet.
 - Each app has the same layout: `stores/` (deal, options, tabs, `pathDeal.ts`),
   `components/layout/` (`MultiDeal`, `Deal`, `DealHeader`), a provider, and
   `devtools.ts` (dev only: Redux DevTools extension, `?debug` logging).

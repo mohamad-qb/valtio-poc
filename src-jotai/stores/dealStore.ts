@@ -132,7 +132,7 @@ export const createDealStore = (devtoolsAtom: Atom<DealDevtools>): DealStore => 
   };
 
   const insertGroup = (get: Getter, set: Setter, groupType: GroupType, position: number, source?: GroupStore) => {
-    const groupStore = createGroupStore(get, get(dealStore.dealFieldsAtom), groupType, source);
+    const groupStore = createGroupStore(get, dealStore, groupType, source);
     set(dealStore.groupsAtom, (groups) => ({ ...groups, [groupStore.id]: groupStore }));
     set(dealStore.groupIdsAtom, (groupIds) => groupIds.toSpliced(position, 0, groupStore.id));
     reindexGroups(get, set);
