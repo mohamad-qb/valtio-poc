@@ -49,7 +49,19 @@
   background: var(--surface);
 }
 
-/* group headers in the pre-header panel, one per run of a group's products */
+/* group headers in the pre-header panel, one per run of a group's products;
+   with nothing frozen (a narrow screen), a spacer stands over the columns before them */
+.grid-group-spacer {
+  display: inline-block;
+  height: 100%;
+  vertical-align: top;
+}
+
+/* the group headers stay on one line, scrolled along with the columns */
+.deal-grid .slick-preheader-panel > div {
+  white-space: nowrap;
+}
+
 .grid-group {
   display: inline-flex;
   align-items: center;
@@ -137,6 +149,15 @@
   box-shadow: inset 0 0 0 1px var(--error);
 }
 
+/* an edit that can't be committed (text in a number cell): the editor stays open, flagged */
+.deal-grid .slick-cell.invalid {
+  box-shadow: inset 0 0 0 2px var(--error);
+}
+
+.grid-editor[aria-invalid="true"] {
+  color: var(--error);
+}
+
 .grid-editor {
   width: 100%;
   height: 100%;
@@ -151,4 +172,8 @@
   min-height: 1.5em;
   font-size: 12px;
   text-align: start;
+}
+
+.deal-grid__status--error {
+  color: var(--error);
 }

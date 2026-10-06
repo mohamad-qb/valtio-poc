@@ -4,31 +4,32 @@ import { type PathDeal, createChangeHub } from "@shared/pathDeal.ts";
 import { parsePath } from "@shared/paths.ts";
 import { noIssues } from "@shared/validation.ts";
 import type { DealStore } from "./dealStore.ts";
-import { type GroupsState, productOf, productsOf } from "./groupStore.ts";
+import { type GroupsState, productOf } from "./groupStore.ts";
 import { $optionsByKey } from "./optionsStore.ts";
 import type { ProductState } from "./productStore.ts";
 
-/** The ids whose value is a different object than before: immutable data changed there. */
-const changedIds = (previous: Record<string, unknown>, next: Record<string, unknown>) =>
-  Object.keys(next).filter((id) => previous[id] !== next[id]);
-
+/** Every product with its group, by product id. */
 const productsById = (groups: GroupsState) =>
-  Object.fromEntries(productsOf(groups).map((product) => [product.id, product])) as Record<string, ProductState>;
+  new Map(
+    Object.values(groups).flatMap((group) =>
+      Object.values(group.products).map((product) => [product.id, { groupId: group.id, product }] as const),
+    ),
+  );
 
 /**
  * A nested effector deal as a `PathDeal`. Its state already has the paths'
  * shape (`<groupId>.products.<productId>.data…`), so a product path reads
  * straight from it. A write copies only the path to what changed, so what
- * changed is found by identity: a group, a product or its issues that
- * changed is a new object.
+ * changed is found by identity: a group or product that changed is a new
+ * object (its issues follow from its data).
  */
 export const createPathDeal = (deal: DealStore): PathDeal => {
+  // product id → its item, rebuilt only when the groups change
+  let indexed: { groups: GroupsState; byId: Map<string, { groupId: string; product: ProductState }> } | null = null;
   const findProduct = (productId: string) => {
-    for (const group of Object.values(deal.$groups.getState())) {
-      const product = group.products[productId];
-      if (product) return { groupId: group.id, product };
-    }
-    return undefined;
+    const groups = deal.$groups.getState();
+    if (indexed?.groups !== groups) indexed = { groups, byId: productsById(groups) };
+    return indexed.byId.get(productId);
   };
 
   return {
@@ -58,8 +59,8 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
     subscribe: createChangeHub((onChange) => {
       let groups = deal.$groups.getState();
       let products = productsById(groups);
-      let validation = deal.$validation.getState();
       const stops = [
+        // a product's issues follow from its data: one report per change
         deal.$groups.updates.watch((next) => {
           // every edit is a new `$groups`: only a group added, removed or re-titled is a column change
           const previous = Object.values(groups);
@@ -70,13 +71,10 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
             current.every((group, i) => group.id === previous[i].id && group.ui === previous[i].ui);
           if (!sameGroups) onChange({ kind: "groups" });
           const nextProducts = productsById(next);
-          const ids = changedIds(products, nextProducts);
+          const ids = [...nextProducts]
+            .filter(([id, { product }]) => products.get(id)?.product !== product)
+            .map(([id]) => id);
           products = nextProducts;
-          if (ids.length) onChange({ kind: "products", ids });
-        }),
-        deal.$validation.updates.watch((next) => {
-          const ids = changedIds(validation, next);
-          validation = next;
           if (ids.length) onChange({ kind: "products", ids });
         }),
         deal.$dealFields.updates.watch(() => onChange({ kind: "dealFields" })),

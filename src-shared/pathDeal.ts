@@ -50,22 +50,51 @@ export type PathDeal = {
   spotPriceStream: SpotPriceStream;
 };
 
+/** A listener's error, rethrown on its own (so it is still reported) once every other listener has heard the change. */
+const rethrowLater = (error: unknown) => {
+  if (typeof reportError === "function") reportError(error);
+  else
+    queueMicrotask(() => {
+      throw error;
+    });
+};
+
 /**
  * One set of store subscriptions shared by every listener of a deal: started
  * with the first listener, stopped with the last. `start` subscribes to the
  * stores and reports changes through `emit`.
+ *
+ * Each subscription is its own entry (the same function subscribed twice is
+ * two subscriptions, each ended by its own unsubscribe), and a listener that
+ * throws doesn't keep the others from hearing the change: its error is
+ * rethrown afterwards. A `start` that throws leaves no listener behind.
  */
 export const createChangeHub = (
   start: (emit: (change: DealChange) => void) => () => void,
 ): PathDeal["subscribe"] => {
-  const listeners = new Set<(change: DealChange) => void>();
+  const subscriptions = new Set<{ notify: (change: DealChange) => void }>();
   let stop: (() => void) | null = null;
+  const emit = (change: DealChange) =>
+    subscriptions.forEach(({ notify }) => {
+      try {
+        notify(change);
+      } catch (error) {
+        rethrowLater(error);
+      }
+    });
   return (listener) => {
-    listeners.add(listener);
-    if (!stop) stop = start((change) => listeners.forEach((notify) => notify(change)));
+    const subscription = { notify: listener };
+    subscriptions.add(subscription);
+    if (!stop) {
+      try {
+        stop = start(emit);
+      } catch (error) {
+        subscriptions.delete(subscription);
+        throw error;
+      }
+    }
     return () => {
-      listeners.delete(listener);
-      if (listeners.size || !stop) return;
+      if (!subscriptions.delete(subscription) || subscriptions.size || !stop) return;
       stop();
       stop = null;
     };

@@ -1,52 +1,32 @@
-import type { $ZodIssue } from "zod/v4/core";
-import type { ProductFieldId } from "@shared/fields.ts";
-import type {
-  GenericProductDefinition,
-  ProductData,
-} from "@shared/products/productRegistry.ts";
-import { fieldIssues, validationDependencies } from "@shared/validation.ts";
-import type { DealStore } from "./dealStore.ts";
-import { subscribePath } from "./subscribe.ts";
-
-/** `validationErrors` key for a field path relative to the deal. */
-export const toValidationKey = (path: string) => path.replaceAll(".", "_");
-
-const isSameIssues = (a: readonly $ZodIssue[] | undefined, b: readonly $ZodIssue[]) =>
-  (a?.length ?? 0) === b.length &&
-  b.every((issue, i) => issue.message === a?.[i].message);
+import { snapshot } from "valtio";
+import { type ProductData, definitionOf, productTypeOf } from "@shared/products/productRegistry.ts";
+import { type FieldIssues, productIssues } from "@shared/validation.ts";
+import type { GroupStore } from "./groupStore.ts";
 
 /**
- * Validates one product field into the deal's `validationErrors`: now, and
- * whenever the field — or a field its rules read — changes; never on
- * unrelated changes. Returns the unsubscribe.
+ * Validation isn't state: a product's issues follow from its data. A valtio
+ * snapshot is immutable and stays the same object until the data changes,
+ * so issues are cached per snapshot: an edit re-validates only the product
+ * it touched, and nothing is subscribed to the nested objects a write may
+ * replace.
  */
-export const watchFieldValidation = (
-  $dealStore: DealStore,
-  definition: GenericProductDefinition,
-  data: ProductData,
-  productPath: string, // the product's path from the deal
-  fieldId: ProductFieldId,
-) => {
-  const key = toValidationKey(`${productPath}.data.${definition.fieldPaths[fieldId]}`);
 
-  const validate = () => {
-    const issues = fieldIssues(definition, fieldId, data);
-    // only write when the issues changed: no new identities, no notifications
-    if (isSameIssues($dealStore.validationErrors[key], issues)) return;
-    $dealStore.validationErrors[key] = [...issues];
-  };
+const issuesBySnapshot = new WeakMap<object, FieldIssues>();
 
-  validate();
-  const unsubscribes = [fieldId, ...validationDependencies(definition, fieldId)].map(
-    (watched) => subscribePath(data, definition.fieldPaths[watched], validate),
-  );
-  return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
-};
-
-/** Drops every validation entry under `path` (e.g. a removed group). */
-export const clearValidationErrors = ($dealStore: DealStore, path: string) => {
-  const prefix = toValidationKey(`${path}.`);
-  for (const key of Object.keys($dealStore.validationErrors)) {
-    if (key.startsWith(prefix)) delete $dealStore.validationErrors[key];
+/** A live product's issues, per field (fields without any left out). */
+export const issuesOf = (data: ProductData): FieldIssues => {
+  const current = snapshot(data) as ProductData;
+  let issues = issuesBySnapshot.get(current);
+  if (!issues) {
+    issues = productIssues(definitionOf(productTypeOf(current)), current);
+    issuesBySnapshot.set(current, issues);
   }
+  return issues;
 };
+
+/** Whether any of the deal's products has issues. */
+export const hasValidationErrors = ({ groupIds, groups }: { groupIds: readonly string[]; groups: Record<string, GroupStore> }) =>
+  groupIds.some((groupId) => {
+    const group = groups[groupId];
+    return group.productIds.some((productId) => Object.keys(issuesOf(group.products[productId].data)).length > 0);
+  });

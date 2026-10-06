@@ -5,11 +5,13 @@
 
 .deal__toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space);
 }
 
 .deal__calc {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space);
   margin-bottom: var(--space);

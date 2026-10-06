@@ -1,5 +1,6 @@
 import { isCalcReady, needsAutocalc } from "@shared/calc.ts";
-import type { DealProduct } from "@shared/dealWrites.ts";
+import { type DealProduct, type RoutedWrites, routeWrites } from "@shared/dealWrites.ts";
+import type { PathWrite } from "@shared/paths.ts";
 import { type ProductData, definitionOf, productTypeOf } from "@shared/products/productRegistry.ts";
 import { type FieldIssues, productIssues } from "@shared/validation.ts";
 import type { DealState } from "./state.ts";
@@ -11,6 +12,22 @@ export const productsOf = (deal: DealState): DealProduct[] =>
     const group = deal.groups[groupId];
     return group.productIds.map((productId) => ({ groupId, productId, data: group.products[productId].data }));
   });
+
+const routedByWrites = new WeakMap<readonly PathWrite[], { deal: DealState; routed: RoutedWrites }>();
+
+/**
+ * A batch of path writes routed over a deal by the shared rules: what each
+ * part of the deal gets. The thunk routes a batch for the options it
+ * reloads, the reducer for what it writes; the same batch over the same deal
+ * is routed once.
+ */
+export const routedWrites = (deal: DealState, writes: readonly PathWrite[]): RoutedWrites => {
+  const cached = routedByWrites.get(writes);
+  if (cached?.deal === deal) return cached.routed;
+  const routed = routeWrites({ dealFields: deal.dealFields, settings: deal.settings, products: productsOf(deal) }, writes);
+  routedByWrites.set(writes, { deal, routed });
+  return routed;
+};
 
 const issuesByData = new WeakMap<ProductData, FieldIssues>();
 

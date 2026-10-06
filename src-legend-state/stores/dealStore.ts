@@ -3,10 +3,10 @@ import {
   type ObservableParam,
   batch,
   computed,
+  internal,
   observable,
   observe,
 } from "@legendapp/state";
-import type { $ZodIssue } from "zod/v4/core";
 import { calculatePrice } from "@shared/api/calculate.ts";
 import {
   type CalcState,
@@ -24,15 +24,16 @@ import {
   initialDealSettings,
 } from "@shared/dealSettings.ts";
 import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
-import { type ProductFieldId, dealOptionsRequests } from "@shared/fields.ts";
+import { dealOptionsRequests } from "@shared/fields.ts";
 import { type GroupType, groupDefinitions, productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
+import type { Option } from "@shared/options/optionsSource.ts";
 import type { PathWrite } from "@shared/paths.ts";
 import {
-  type GenericProductDefinition,
   type ProductData,
   type ProductUi,
   definitionOf,
+  productTypeOf,
 } from "@shared/products/productRegistry.ts";
 import {
   type OptionsRequest,
@@ -46,12 +47,9 @@ import {
   type SpotPriceStream,
   createSpotPriceStream,
 } from "@shared/spotPriceStream.ts";
-import {
-  fieldIssues,
-  noIssues,
-  validationDependencies,
-} from "@shared/validation.ts";
-import { loadOptions, options$ } from "./optionsStore.ts";
+import { type FieldIssues, productIssues } from "@shared/validation.ts";
+import { isolated } from "./listeners.ts";
+import { loadOptions, onOptionsLoaded, options$ } from "./optionsStore.ts";
 
 /**
  * A deal's state: plain data only, so `peek()` is the deal as JSON. Group
@@ -95,8 +93,8 @@ export type DealStore = {
   readonly hasValidationErrors$: Observable<boolean>;
   /** No validation errors and no request pending: ready to calculate. */
   readonly isReady$: Observable<boolean>;
-  /** A product field's issues; read in an observer or computed, it tracks just them. */
-  fieldIssues(productId: string, fieldId: ProductFieldId): readonly $ZodIssue[];
+  /** A product's issues, per field (fields without any left out), from its data. */
+  issuesOf(productId: string, data: ProductData): FieldIssues;
   addNewGroup(groupType: GroupType): void;
   cloneGroup(groupId: string): void;
   removeGroup(groupId: string): void;
@@ -104,6 +102,7 @@ export type DealStore = {
   writePaths(writes: readonly PathWrite[]): void;
   /** Calculates now, if ready (the manual Calculate). */
   calculate(): void;
+  /** Drops everything the deal subscribed to, and stops its stream. */
   dispose(): void;
 };
 
@@ -117,59 +116,35 @@ const nodeAt = (root$: ObservableParam, path: string): ObservableParam =>
       root$,
     );
 
-/** A product's validation, kept beside its state: computeds aren't data. */
-type ProductValidation = {
-  issues: Record<ProductFieldId, Observable<readonly $ZodIssue[]>>;
-  hasErrors$: Observable<boolean>;
-};
-
-/**
- * One computed per field. Each reads (so tracks) only the leaves its rules
- * read, then validates the plain data: an edit re-validates only the fields
- * that depend on it, and only when one of them is observed.
- */
-const createValidation = (
-  definition: GenericProductDefinition,
-  data$: Observable<ProductData>,
-): ProductValidation => {
-  const fieldIds = Object.keys(definition.fieldPaths) as ProductFieldId[];
-  const issues = Object.fromEntries(
-    fieldIds.map((fieldId) => [
-      fieldId,
-      computed(() => {
-        for (const watched of [
-          fieldId,
-          ...validationDependencies(definition, fieldId),
-        ]) {
-          nodeAt(data$, definition.fieldPaths[watched]).get();
-        }
-        // a removed product's computeds still hear its leaves go: nothing left to validate
-        const data = data$.peek();
-        return data ? fieldIssues(definition, fieldId, data) : noIssues;
-      }),
-    ]),
-  ) as Record<ProductFieldId, Observable<readonly $ZodIssue[]>>;
-  return {
-    issues,
-    hasErrors$: computed(() =>
-      fieldIds.some((fieldId) => issues[fieldId].get().length > 0),
-    ),
-  };
-};
-
 /**
  * Deal factory, over a deal's observable state (its own, unless given one:
  * the tabs keep every deal in one tree). Every write is a batch of dot paths,
- * routed by the shared rules and set leaf by leaf in one `batch`, so every
- * listener (autocalc, inputs changed, the grid) runs once, after the last
- * write, and only for the leaves that changed.
+ * routed by the shared rules and set leaf by leaf in one `batch`, with the
+ * price it outdates, so every listener (autocalc, the grid) runs once, after
+ * the last write, and only for the leaves that changed.
  */
 export const createDealStore = (
   devtools$: DealDevtools,
   deal$: Observable<DealState> = observable<DealState>(initialDealState()),
 ): DealStore => {
   const spotPriceStream = createSpotPriceStream();
-  const validations = new Map<string, ProductValidation>();
+
+  /**
+   * Each product's issues, from its plain data, kept until the data changes.
+   * Legend-State writes in place (no new object to key a cache by), and every
+   * write goes through `applyProductWrites`, which drops the entry. Nothing
+   * reactive per product: Legend-State never prunes a deleted key's nodes,
+   * so whatever listened on a removed product's leaves stayed for good.
+   */
+  const issues = new Map<string, FieldIssues>();
+  const issuesOf = (productId: string, data: ProductData) => {
+    let found = issues.get(productId);
+    if (!found) {
+      found = productIssues(definitionOf(productTypeOf(data)), data);
+      issues.set(productId, found);
+    }
+    return found;
+  };
 
   const productsOf = (state: DealState): DealProduct[] =>
     state.groupIds.flatMap((groupId) => {
@@ -183,37 +158,43 @@ export const createDealStore = (
   const data$Of = (groupId: string, productId: string) =>
     deal$.groups[groupId].products[productId].data;
 
-  /** Sets a product's changed leaves, by the shared rules (derived fields are kept as data). */
+  /** Sets a product's changed leaves, by the shared rules (derived fields are kept as data); whether any changed. */
   const applyProductWrites = (
-    data$: Observable<ProductData>,
+    groupId: string,
+    productId: string,
     writes: readonly ProductWrite[],
   ) => {
-    for (const change of planProductWrites(data$.peek(), writes).changes) {
+    const data$ = data$Of(groupId, productId);
+    const { changes } = planProductWrites(data$.peek(), writes);
+    if (changes.length) issues.delete(productId); // validated again when next read
+    for (const change of changes) {
       const leaf$ = nodeAt(data$, change.path);
       if ("remove" in change) leaf$.delete();
       else leaf$.set(change.value);
     }
+    return changes.length > 0;
   };
 
-  /**
-   * Loads options; when they arrive, every product still on that parameter
-   * reconciles. Call it inside the batch that needs them: the pending count
-   * goes up before any listener sees the batch (no early autocalc).
-   */
-  const requestOptions = (requests: readonly OptionsRequest[]) => {
-    for (const request of requests) {
-      void loadOptions(request.source, request.param).then((options) => {
-        if (!options) return;
-        batch(() => {
-          for (const { groupId, productId, data } of productsOf(deal$.peek())) {
-            applyProductWrites(
-              data$Of(groupId, productId),
-              reconcileWrites(data, request, options),
-            );
-          }
-        });
-      });
+  // the calculation is replaced, never written into: unchanged comes back as the same object
+  const setCalc = (next: CalcState) => {
+    if (next !== deal$.calc.peek()) deal$.calc.set(next);
+  };
+
+  /** Any product change outdates the price and supersedes a calculation in flight, in the batch that made it. */
+  const inputsChanged = () => setCalc(calcInputsChanged(deal$.calc.peek()));
+
+  /** Options arrived (for any deal: the options store calls every deal, in its batch): each product still on that parameter reconciles. */
+  const reconcileOptions = (request: OptionsRequest, options: readonly Option[]) => {
+    let changed = false;
+    for (const { groupId, productId, data } of productsOf(deal$.peek())) {
+      if (applyProductWrites(groupId, productId, reconcileWrites(data, request, options))) changed = true;
     }
+    if (changed) inputsChanged();
+  };
+
+  /** Loads options. Call it inside the batch that needs them: the pending count goes up before any listener sees the batch (no early autocalc). */
+  const requestOptions = (requests: readonly OptionsRequest[]) => {
+    for (const { source, param } of requests) void loadOptions(source, param);
   };
 
   /** `source`: a group to clone, each product seeded with a copy of the one at its position. */
@@ -230,7 +211,6 @@ export const createDealStore = (
       products: {},
     };
     groupDefinitions[groupType].productTypes.forEach((productType, index) => {
-      const definition = definitionOf(productType);
       const sourceData = source?.products[source.productIds[index]].data;
       const product: ProductState = {
         id: uuid(),
@@ -238,20 +218,16 @@ export const createDealStore = (
         // a plain deep copy: the clone never shares an object with its source
         data: sourceData
           ? structuredClone(sourceData)
-          : definition.createData(dealFields),
+          : definitionOf(productType).createData(dealFields),
       };
       group.products[product.id] = product;
       group.productIds.push(product.id);
-      // ready before the deal lists the product: its computeds are read from then on
-      validations.set(
-        product.id,
-        createValidation(definition, data$Of(group.id, product.id)),
-      );
     });
     batch(() => {
       // record first, so the id never appears in the order without its group
       deal$.groups[group.id].set(group);
       deal$.groupIds.set((ids) => ids.toSpliced(position, 0, group.id));
+      inputsChanged(); // new products outdate the price too
       requestOptions(
         uniqueRequests(
           group.productIds.flatMap((id) =>
@@ -262,22 +238,21 @@ export const createDealStore = (
     });
   };
 
-  // the calculation is replaced, never written into: unchanged comes back as the same object
-  const setCalc = (next: CalcState) => {
-    if (next !== deal$.calc.peek()) deal$.calc.set(next);
-  };
-
-  const hasValidationErrors$ = computed(() =>
-    deal$.groupIds
-      .get()
-      .some((groupId) =>
-        deal$.groups[groupId].productIds
-          .get()
-          .some((productId) => validations.get(productId)!.hasErrors$.get()),
-      ),
-  );
+  // the products' data, tracked through the groups (one listener): each re-checked from the cache
+  const hasValidationErrors$ = computed(() => {
+    const groups = deal$.groups.get();
+    return deal$.groupIds.get().some((groupId) => {
+      const { productIds, products } = groups[groupId];
+      return productIds.some(
+        (productId) => Object.keys(issuesOf(productId, products[productId].data)).length > 0,
+      );
+    });
+  });
+  // the shared count, mirrored into the deal by a listener `dispose` stops: a
+  // computed over `options$` itself would stay subscribed to it for good
+  const pending$ = observable(options$.pending.peek());
   const isReady$ = computed(() =>
-    isCalcReady(hasValidationErrors$.get(), options$.pending.get()),
+    isCalcReady(hasValidationErrors$.get(), pending$.get()),
   );
 
   const store: DealStore = {
@@ -285,9 +260,7 @@ export const createDealStore = (
     spotPriceStream,
     hasValidationErrors$,
     isReady$,
-    fieldIssues: (productId, fieldId) =>
-      (validations.get(productId)?.issues[fieldId]?.get() as
-        readonly $ZodIssue[] | undefined) ?? noIssues,
+    issuesOf,
     addNewGroup: (groupType) =>
       insertGroup(groupType, deal$.groupIds.peek().length),
     /** Inserts a copy of the group (and its products) right after it. */
@@ -304,8 +277,12 @@ export const createDealStore = (
         // order first, so the id never appears without its group
         deal$.groupIds.set((ids) => ids.filter((id) => id !== groupId));
         deal$.groups[groupId].delete();
+        inputsChanged(); // so do removed ones
       });
-      for (const productId of group.productIds) validations.delete(productId);
+      for (const productId of group.productIds) issues.delete(productId);
+      // Legend-State keeps a deleted key's nodes (its leaves written, its
+      // listeners): drop them, or every removed group stays in memory
+      internal.getNode(deal$.groups).children?.delete(groupId);
     },
     writePaths: (writes) => {
       const state = deal$.peek();
@@ -324,24 +301,27 @@ export const createDealStore = (
           deal$.dealFields.assign(routed.dealFields);
         if (routed.settings !== state.settings)
           deal$.settings.assign(routed.settings);
+        let changed = false;
         for (const [
           productId,
           { groupId, writes: productWrites },
         ] of routed.products) {
-          applyProductWrites(data$Of(groupId, productId), productWrites);
+          if (applyProductWrites(groupId, productId, productWrites)) changed = true;
         }
+        if (changed) inputsChanged();
         requestOptions(routed.requests);
       });
     },
     calculate: () => {
       if (!isReady$.peek()) return;
       const requestId = deal$.calc.requestId.peek() + 1;
-      setCalc(calcStarted(deal$.calc.peek(), requestId));
-      // the products are read now, like a request body
+      // the products are read now, like a request body, and sent before anyone
+      // hears it started: a listener that throws can't leave it "calculating"
       calculatePrice(productsOf(deal$.peek()).map(({ data }) => data)).then(
         (price) => setCalc(calcSucceeded(deal$.calc.peek(), requestId, price)),
         () => setCalc(calcFailed(deal$.calc.peek(), requestId)),
       );
+      setCalc(calcStarted(deal$.calc.peek(), requestId));
     },
     dispose: () => {
       stops.forEach((stop) => stop());
@@ -365,36 +345,39 @@ export const createDealStore = (
       store.calculate();
   };
 
-  // the deal column's own options (its default parameters), loaded with the deal
-  requestOptions(dealOptionsRequests);
-
   const stops = [
-    // any change under the groups (a product edit, a group added or removed)
-    // outdates the price and supersedes a calculation in flight
-    deal$.groups.onChange(() => setCalc(calcInputsChanged(deal$.calc.peek()))),
+    onOptionsLoaded(reconcileOptions),
+    options$.pending.onChange(isolated(({ value }) => pending$.set(value))),
     // autocalc: whenever the deal is ready and its price missing or outdated.
     // It re-runs on every change to what it read, even when the condition
     // stays true (a calculation superseded in the batch that started it).
     // Computeds are pushed in listener order, so while a batch notifies,
     // `isReady$` may not have caught up with an edit yet (an invalid one):
     // it only schedules, and checks again once everything has settled
-    observe(() => {
-      if (
-        shouldAutocalc(
-          devtools$.isAutocalcEnabled.get(),
-          isReady$.get(),
-          deal$.calc.get(),
-        )
-      ) {
-        queueMicrotask(autocalc);
-      }
-    }),
-    observe(() =>
-      devtools$.isSpotPriceStreamEnabled.get()
-        ? spotPriceStream.start()
-        : spotPriceStream.stop(),
+    observe(
+      isolated(() => {
+        if (
+          shouldAutocalc(
+            devtools$.isAutocalcEnabled.get(),
+            isReady$.get(),
+            deal$.calc.get(),
+          )
+        ) {
+          queueMicrotask(autocalc);
+        }
+      }),
+    ),
+    observe(
+      isolated(() =>
+        devtools$.isSpotPriceStreamEnabled.get()
+          ? spotPriceStream.start()
+          : spotPriceStream.stop(),
+      ),
     ),
   ];
+
+  // the deal column's own options (its default parameters), loaded with the deal
+  requestOptions(dealOptionsRequests);
 
   return store;
 };

@@ -3,7 +3,7 @@ import type { DealFieldsState } from "@shared/dealFields.ts";
 import { productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import { type ProductData, type ProductType, definitionOf } from "@shared/products/productRegistry.ts";
-import { type ProductWrite, definitionOfData, planProductWrites } from "@shared/products/productWrites.ts";
+import { type ProductWrite, definitionOfData, planProductWrites, withNumbersRevived } from "@shared/products/productWrites.ts";
 import { type FieldIssues, productIssues } from "@shared/validation.ts";
 
 /**
@@ -15,7 +15,9 @@ export const Product = types
   .model("Product", {
     id: types.optional(types.identifier, uuid),
     title: types.string,
-    data: types.frozen<ProductData>(),
+    data: types.snapshotProcessor(types.frozen<ProductData>(), {
+      preProcessor: (snapshot: ProductData) => withNumbersRevived(snapshot),
+    }),
   })
   .views((self) => ({
     /** Every field's issues; validated again only when this product's data changes. */
@@ -27,9 +29,12 @@ export const Product = types
     },
   }))
   .actions((self) => ({
-    /** Applies writes by the shared rules (derived fields included). */
+    /** Applies writes by the shared rules (derived fields included); whether anything changed. */
     write(writes: readonly ProductWrite[]) {
-      self.data = planProductWrites(self.data, writes).data;
+      const { data } = planProductWrites(self.data, writes);
+      if (data === self.data) return false;
+      self.data = data;
+      return true;
     },
   }));
 

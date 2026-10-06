@@ -18,15 +18,26 @@ const Devtools = types
     },
   }));
 
-const loadDevtools = () => {
+type Switches = { isSpotPriceStreamEnabled: boolean; isAutocalcEnabled: boolean };
+
+/** The stored switches, key by key: one missing, unreadable or not a boolean keeps its default. */
+const loadSwitches = (): Partial<Switches> => {
+  let stored: Partial<Record<keyof Switches, unknown>> = {};
   try {
-    return JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    if (typeof parsed === "object" && parsed !== null) stored = parsed;
   } catch {
-    return {};
+    // unreadable (not JSON, or no storage): the defaults
   }
+  const switches: Partial<Switches> = {};
+  for (const key of ["isSpotPriceStreamEnabled", "isAutocalcEnabled"] as const) {
+    const value = stored[key];
+    if (typeof value === "boolean") switches[key] = value;
+  }
+  return switches;
 };
 
-export const devtools = Devtools.create(loadDevtools());
+export const devtools = Devtools.create(loadSwitches());
 
 onSnapshot(devtools, (snapshot) => {
   try {
@@ -43,9 +54,12 @@ const MultiTab = types
     activeDealId: "",
   })
   .actions((self) => ({
+    /** A new deal, with its first group, in a new tab. */
     addNewDeal() {
       self.deals.push({});
-      self.activeDealId = self.deals[self.deals.length - 1].id;
+      const deal = self.deals[self.deals.length - 1];
+      deal.addNewGroup("VanillaGroup");
+      self.activeDealId = deal.id;
     },
     setActiveDeal(activeDealId: string) {
       self.activeDealId = activeDealId;

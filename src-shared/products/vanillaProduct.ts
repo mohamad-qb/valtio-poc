@@ -116,8 +116,11 @@ export const vanillaProduct = defineProduct<VanillaProductStore["data"]>({
     {
       props: { path: "groups.$GROUP_ID.products.$PRODUCT_ID.data.cashSettlement.settlementFixingSource" },
       position: { field: "settlementFixingSource" },
-      // an option id; its options come from the API, per settlement style
-      validation: { schema: ["groups.$GROUP_ID.products.$PRODUCT_ID.data.cashSettlement.settlementFixingSource", z.string()] },
+      // an option id; its options come from the API, per settlement style. A Cash
+      // product has none only until they first arrive: while they load (the deal
+      // isn't ready then anyway, a request is pending) or after they failed (O8:
+      // the rest of the deal keeps working), so a missing one is no issue
+      validation: { schema: ["groups.$GROUP_ID.products.$PRODUCT_ID.data.cashSettlement.settlementFixingSource", z.string().optional()] },
     },
   ],
 
@@ -126,8 +129,9 @@ export const vanillaProduct = defineProduct<VanillaProductStore["data"]>({
       {
         dependsOn: ["expiryDate"],
         message: "Delivery date can't be before expiry date",
-        isValid: ({ optionsCommon: { base } }) =>
-          isOnOrAfter(base.deliveryDate, base.expiryDate),
+        // read defensively: data written by path may lack the object
+        isValid: (data) =>
+          isOnOrAfter(data.optionsCommon?.base?.deliveryDate ?? "", data.optionsCommon?.base?.expiryDate ?? ""),
       },
     ],
   },
@@ -135,7 +139,7 @@ export const vanillaProduct = defineProduct<VanillaProductStore["data"]>({
   derived: {
     expiryDays: {
       dependsOn: ["expiryDate"],
-      compute: ({ optionsCommon: { base } }) => daysUntil(base.expiryDate),
+      compute: (data) => daysUntil(data.optionsCommon?.base?.expiryDate),
       // typing a number of days moves the expiry date that many days from today
       write: (days) => ({ fieldId: "expiryDate", value: dateInDays(days) }),
     },

@@ -33,7 +33,7 @@ const mapValues = <T>(record: Record<string, T>, update: (value: T) => T) => {
   const next: Record<string, T> = {};
   for (const [id, value] of Object.entries(record)) {
     next[id] = update(value);
-    changed ||= next[id] !== value;
+    if (next[id] !== value) changed = true;
   }
   return changed ? next : record; // same object: no update, no re-render
 };

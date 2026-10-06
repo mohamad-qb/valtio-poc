@@ -57,9 +57,10 @@ Test references: `deal ›` = `tests/stores/deal.test.ts`, `paths ›`,
 | L1 | One grid per deal. Columns, left to right: the settings subgrid (labels, values), the deal column ("Deal"), the field labels, then one column per product, grouped under its group's header. The settings, deal and labels stay in view while products scroll. | e2e/layout › "the deal, then the labels…"; grid › "lists the deal, then every product under its group" |
 | L2 | One row per field, 16 in all, in display order starting Notional Ccy, Notional Amount, Premium Ccy. | e2e/layout |
 | L3 | A group header spans exactly its products. Groups are titled "<Type> #n" by position, products "<Product> #n" within their group. | e2e/layout; deal › "builds groups with typed, numbered products" |
-| L4 | A new deal starts with one Vanilla Group. Buttons add a Vanilla Group, Strategy or Average. | e2e/layout; deal › "builds groups…" |
-| L5 | Tabs: "Add New Deal" opens a fresh deal in a new tab; each tab keeps its own deal. | e2e/devtools › "tabs hold independent deals" |
+| L4 | A new deal starts with one Vanilla Group, created with the deal (not when its tab is shown). Buttons add a Vanilla Group, Strategy or Average. | e2e/layout; deal › "builds groups…"; libraries › "a new tab's deal … comes with its first group" |
+| L5 | Tabs: "Add New Deal" opens a fresh deal in a new tab; each tab keeps its own deal. Switching tabs never changes a deal: no group is added, and a deal whose groups were all removed stays empty. | e2e/devtools › "tabs hold independent deals", "a deal whose groups were all removed stays empty across tab switches" |
 | L6 | A landing page (`index.html`) links to every version. | e2e/layout › "the landing page links to every app" |
+| L7 | At phone width the products stay reachable (nothing is frozen below 800 px), and the tab bar and toolbars wrap. | e2e/gridEdges › "at phone width the products can be reached and the bars wrap" |
 
 ## 3. Groups
 
@@ -96,9 +97,9 @@ dates, `NaN` for numbers (shown as an empty cell, never 0).
 | # | Requirement | Checked by |
 | --- | --- | --- |
 | F1 | Every field is validated for both product types; a cell with issues is marked as an error. | deal › "validates fields, for both product kinds"; e2e/fields |
-| F2 | **Synced fields** (Notional Ccy, Notional Amount, Premium Ccy) move together, both ways: the deal and every product, whichever is edited. New products start from the deal's values. | deal › "syncs Notional Amount both ways…", "syncs Notional/Premium Ccy both ways, Average included"; grid › "a synced write reaches the deal and every product…" |
-| F3 | **Broadcast fields**: a value entered in the deal column is written into every product. The deal keeps nothing (its cell stays empty), and an empty value goes nowhere. | deal › "broadcasts every field to every product and keeps nothing on the deal"; grid › "broadcasts from the deal column…" |
-| F4 | **Expiry Days** is the number of days until Expiry Date. It is writable: typing N sets Expiry Date to today + N. | deal › "derives Expiry Days…"; e2e/fields › "Expiry Days follows Expiry Date…" |
+| F2 | **Synced fields** (Notional Ccy, Notional Amount, Premium Ccy) move together, both ways: the deal and every product, whichever is edited. New products start from the deal's values. A value written by path takes the field's type: `"1000"` → 1000, `123` → `"123"`, `null`/`undefined` → empty. | deal › "syncs Notional Amount both ways…", "syncs Notional/Premium Ccy both ways, Average included"; grid › "a synced write reaches the deal and every product…"; shared-values › "a synced field takes its own type…" |
+| F3 | **Broadcast fields**: a value entered in the deal column is written into every product. The deal keeps nothing (its cell stays empty), and an empty value (`""`, blank text, `null`, NaN) goes nowhere. The deal column's Expiry Days is a broadcast too: it moves every product's Expiry Date. | deal › "broadcasts every field to every product and keeps nothing on the deal"; grid › "broadcasts from the deal column…"; shared-values › "a null or blank broadcast goes nowhere…"; shared-crossApp › "F3/F4: the deal column's Expiry Days…" |
+| F4 | **Expiry Days** is the number of days until Expiry Date, computed when the date is written (it doesn't move at midnight on its own). It is writable: typing N sets Expiry Date to today + N; beyond ±100,000 days the date is cleared rather than written. An impossible date (`2026-02-30`) has no day count. | deal › "derives Expiry Days…"; e2e/fields › "Expiry Days follows Expiry Date…"; shared-dates; shared-crossApp › "P2: Expiry Days far out of range…" |
 | F5 | **Delivery Date can't be before Expiry Date.** The check reruns when either changes, including from a deal broadcast. | deal › "checks Delivery Date against Expiry Date", "re-checks the date rule when the deal broadcasts a date"; e2e/fields |
 | F6 | **Visibility:** Settlement Ccy shows only while the style is Cash. Hidden, its data is kept but not validated. | productConfig › "shows and validates a field only while its visibility condition holds" |
 | F7 | A product config that can't work fails at load: a missing field, a field listed twice, a path not in the data. | productConfig › "fails on load for a config that can't work" |
@@ -108,18 +109,18 @@ dates, `NaN` for numbers (shown as an empty cell, never 0).
 | # | Requirement | Checked by |
 | --- | --- | --- |
 | S1 | Two settings in their own subgrid, beside the deal column from row 3: Hedge Type and Internal (Yes/No, default Yes). | e2e/grid › "the settings subgrid…" |
-| S2 | Hedge Type's options depend on Internal: a/b/c when internal, d/e/f when not. When the options change, the current value is kept if still offered, otherwise the first option. A value not offered is ignored. | grid › "the deal settings: hedge type options follow Internal…"; e2e/grid |
+| S2 | Hedge Type's options depend on Internal: a/b/c when internal, d/e/f when not. When the options change, the current value is kept if still offered, otherwise the first option. A value not offered is ignored. Internal takes only true/false (or "true"/"false", Yes/No); anything else is ignored. In one batch (a paste of the settings column), Internal lands first, and Hedge Type is checked against the options it gives. | grid › "the deal settings: hedge type options follow Internal…"; e2e/grid; shared-routing › "deal settings"; e2e/gridEdges › "a copied settings column pastes back whole…" |
 
 ## 6. Writing by path
 
 | # | Requirement | Checked by |
 | --- | --- | --- |
 | P1 | Any path can be read: product data, the deal's synced fields, its settings. | paths › "reads any path…" |
-| P2 | A batch of path writes is applied in order as **one** update; each product gets only its own writes. | paths › "writes a batch of paths…"; grid › "a paste is one batch…" |
-| P3 | Writes by path keep every field's rules: sync, broadcast, derived, read-only, settings. | paths › "keeps each field's rules…" |
-| P4 | A path that isn't a declared field is written as is; a path the deal doesn't have is ignored. | paths › "a path that isn't a declared field…" |
+| P2 | A batch of path writes is applied in order as **one** update; each product gets only its own writes. A batch that writes a value and then writes back the original changes nothing: no update, and the price isn't outdated. | paths › "writes a batch of paths…"; grid › "a paste is one batch…"; shared-crossApp › "§4: writing a field and writing it back…" |
+| P3 | Writes by path keep every field's rules: sync, broadcast, derived, read-only, settings. An object written over declared fields (e.g. `optionsCommon.base.notional`) is a write to each field in it, so each keeps its rules; anything but an object written there is ignored. | paths › "keeps each field's rules…"; shared-productWrites › "a write past the declared fields"; shared-crossApp › "F2/P3…", "O1/P3…" |
+| P4 | A path that isn't a declared field is written as is; a path the deal doesn't have is ignored. Never written: a path through `__proto__`, `constructor` or `prototype`, a path under a field's value (`…strike.length`), and `productType`. | paths › "a path that isn't a declared field…"; shared-paths; shared-crossApp › "P4: …" |
 | P5 | **Deal logic** runs with every write, as reducers in order (the original app's `onStoreChanges`). Each reducer sees the changes so far; what reducers add is marked as not the user's. | productConfig › "gives each reducer the changes so far…" |
-| P6 | The one reducer today: picking a valid ccy pair (deal or product) sets Notional Ccy to its base currency (EURUSD → EUR), which then syncs. An invalid pair does nothing. | productConfig › "runs the deal logic with every write…" |
+| P6 | The one reducer today: picking a valid ccy pair (deal or product) sets Notional Ccy to its base currency (EURUSD → EUR), which then syncs. An invalid pair does nothing, and so does a pair written to a product the deal doesn't have. | productConfig › "runs the deal logic with every write…"; shared-routing › "the ccy pair rule" |
 
 ## 7. Fixing Source (async options)
 
@@ -130,12 +131,13 @@ Options come from an API (`jsonplaceholder.typicode.com/users`, with
 | --- | --- | --- |
 | O1 | A product has no Fixing Source (not even an empty one) unless its style is Cash; a Delivery product loads nothing. | fixingSources › "has no fixing source unless Cash…"; e2e/options › "against the real API…" |
 | O2 | Switching to Cash adds the field with the first option once loaded; leaving Cash removes it. | fixingSources › "adds the fixing source on Cash…"; e2e/options |
-| O3 | Broadcasting a style makes one request; a value that is still an option is kept, otherwise the first option is taken. | fixingSources › "broadcasts a style with one request…" |
+| O3 | Broadcasting a style makes one request; a value that is still an option (or an option's label, e.g. pasted) is kept as that option, otherwise the first option is taken. | fixingSources › "broadcasts a style with one request…"; shared-routing › "reconcileOption…"; shared-crossApp › "E4/E5: a Fixing Source pasted as its label…" |
 | O4 | A response for a style the product has since left is ignored. | fixingSources › "ignores a response for a style the product has already left" |
 | O5 | A Fixing Source broadcast reaches only Cash products. | fixingSources › "broadcasts a fixing source only to Cash products" |
 | O6 | A style and the fixing source it creates can arrive in one paste, in that order. | grid › "a style and the fixing source it creates land in one paste…"; paths › "a fixing source exists only for Cash…" |
 | O7 | While loading, the cell shows "Loading…". The deal column offers Cash's options. | e2e/options |
-| O8 | A failed request: the cell says "Failed to load", values are left alone, and the rest of the app keeps working. | fixingSources › "leaves values alone when a request fails"; e2e/options › "when the request fails…" |
+| O8 | A failed request: the cell says "Failed to load", values are left alone, and the rest of the app keeps working. A Cash product whose options never arrived has no Fixing Source and no issue for it, so the deal can still be priced. | fixingSources › "leaves values alone when a request fails"; e2e/options › "when the request fails…"; shared-crossApp › "O8: …" |
+| O9 | Options are shared by every deal: when a list arrives, **every** deal's products still on that parameter reconcile, not only the deal that asked, and they do so before the load counts as done (so autocalc prices the reconciled data, once). | libraries › "options arriving reconcile every deal…", "options arriving start one calculation, not two…" |
 
 ## 8. Calculation
 
@@ -156,18 +158,18 @@ products of 1 + Notional Amount / 1000, rounded to 2 decimals, after about
 | # | Requirement | Checked by |
 | --- | --- | --- |
 | D1 | Spot Stream (deal column, read-only) ticks every 500 ms. Ticks are kept outside the state library: they repaint only that cell and never notify the store. | e2e/devtools › "the spot stream follows its toggle…" |
-| D2 | Two app-wide switches, Autocalc and Spot Price Stream, persist across a reload (localStorage). | e2e/devtools; e2e/autocalc |
+| D2 | Two app-wide switches, Autocalc and Spot Price Stream, persist across a reload (localStorage), saved at once. A stored value that is corrupt or of the wrong type falls back to that switch's default; the app never fails to start over it. | e2e/devtools; e2e/autocalc; `tests/stores/*-review.test.ts`, mobx-family, libraries (effector) |
 | D3 | Effector Nested only: the switch stays in sync across browser tabs. | e2e/devtools › "effector-nested: the toggle is kept in sync…" |
 
 ## 10. Grid behaviour
 
 | # | Requirement | Checked by |
 | --- | --- | --- |
-| E1 | Edits commit on Enter, never while typing; Escape cancels. Typing over a selected cell starts an edit that replaces it. | e2e/fields › "edits commit on Enter…", "typing over a cell…" |
-| E2 | Tab order follows field priority: Notional Amount, Expiry Date, Strike, then display order. Read-only cells and missing fields are skipped, and Tab moves on to the next column. Enter after an edit moves on the same way. | gridHelpers › "keyboard order"; e2e/grid › "Tab follows the field priority…", "Enter after an edit…" |
+| E1 | Edits commit on Enter, never while typing; Escape cancels. Typing over a selected cell starts an edit that replaces it. A number cell takes plain numbers with optional thousands separators (`1,000`); other text (`1,5`, `1e3`, `0x10`) is refused and the editor stays open with the reason shown. An edit open during a structural change (a group added or removed) is committed if its column survives, else cancelled. | e2e/fields › "edits commit on Enter…", "typing over a cell…"; e2e/gridEdges › "a number cell takes thousands separators…", "removing the last group while its cell is being edited" |
+| E2 | Tab order follows field priority: Notional Amount, Expiry Date, Strike, then display order. Read-only cells and missing fields are skipped, and Tab moves on to the next column. Enter after an edit moves on the same way. Tab past the last cell (Shift+Tab before the first) leaves the grid. | gridHelpers › "keyboard order"; e2e/grid › "Tab follows the field priority…", "Enter after an edit…"; e2e/gridEdges › "Tab past the last cell leaves the grid…" |
 | E3 | Arrows move to the neighbouring cell, passing over the labels column and across into the settings subgrid row for row. Tab goes through the settings top-down, then into the deal. | e2e/grid › "the settings subgrid…" |
-| E4 | Copy: a range as tab-separated text, dropdowns as their labels. Cells holding tabs, newlines or quotes round-trip as spreadsheets quote them. | e2e/grid › "copies a range…"; gridHelpers › "tab-separated text" |
-| E5 | Paste: a block from the active corner (over the labels column); a single value fills a selection. Text is parsed by field type, and a dropdown takes a label. Unknown values, read-only cells and missing fields are skipped, and the result is reported ("Pasted 2 cells, skipped 1"). | e2e/grid › "pastes a block…"; gridHelpers › "paste", "cell values" |
+| E4 | Copy: a range as tab-separated text, each row ending in a newline (as spreadsheets copy), dropdowns as their labels. Cells holding tabs, newlines or quotes round-trip as spreadsheets quote them, and a last row that is one empty cell is kept. | e2e/grid › "copies a range…"; gridHelpers › "tab-separated text"; e2e/gridEdges › "copying a column that ends in an empty cell…" |
+| E5 | Paste: a block from the active corner (over the labels column); a single value fills a selection. Text is parsed by field type, and a dropdown takes a label. Unknown values, read-only cells, missing fields and values past the grid's edge are skipped, and the result is reported ("Pasted 2 cells, skipped 1"). | e2e/grid › "pastes a block…"; gridHelpers › "paste", "cell values"; e2e/gridEdges › "the paste report counts every value that didn't land" |
 | E6 | A paste into the deal column broadcasts and syncs like an edit. | e2e/grid › "a paste into the deal column…" |
 | E7 | **Only touched cells repaint:** an edit repaints its cell, a synced field its row, and a paste each pasted cell once. One batch means one update. | e2e/grid › "repaints only the cells a change touches"; grid › "a paste is one batch…" |
 
@@ -186,14 +188,18 @@ compared. Each has its own test in `tests/stores/libraries.test.ts`:
 - Jotai: a write sets only its own product's data atom, once per batch,
   copying only the path to the field; nothing is set when no value changes,
   and other products aren't re-validated.
-- Effector Model: a write reaches only its own product's stores; a store per
-  path updates only when its own value changes.
+- Effector Model: a write reaches only its own product's stores, and a batch
+  over many groups outdates the price once and is priced once, whole.
 
 ## 12. Dev-only tooling
 
 - Each version reports its updates to the Redux DevTools extension when
   installed (dev builds only), and logs them to the console with `?debug`.
-  Time travel where the library allows it.
+- Time travel where the library allows it: Redux, Zustand, MobX-State-Tree
+  and mobx-keystone. A jump never re-prices the deal, and empty numbers come
+  back as NaN (Zustand excepted: its middleware has no reviver, so they come
+  back `null`). The others report only. Checked by
+  `tests/stores/redux-devtools.test.ts`, `zustand-review`, `mobx-family`.
 
 ## Open questions
 

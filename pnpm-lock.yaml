@@ -21,7 +21,7 @@ importers:
         specifier: ^2.13.0
         version: 2.13.0(react-redux@9.3.0(@types/react@19.3.0)(react@19.3.0)(redux@5.0.1))(react@19.3.0)
       clsx:
-        specifier: latest
+        specifier: 2.1.1
         version: 2.1.1
       effector:
         specifier: ^23.4.4
@@ -63,26 +63,14 @@ importers:
         specifier: ^5.20.2
         version: 5.20.2
       valtio:
-        specifier: latest
+        specifier: 2.3.2
         version: 2.3.2(@types/react@19.3.0)(react@19.3.0)
-      valtio-auto-persist:
-        specifier: ^2.2.3
-        version: 2.2.3(@types/react@19.3.0)(react@19.3.0)
-      valtio-persist:
-        specifier: ^2.2.5
-        version: 2.2.5(@types/react@19.3.0)(react@19.3.0)
-      valtio-plugin:
-        specifier: ^1.11.4
-        version: 1.11.4(@types/react@19.3.0)(react@19.3.0)(valtio@2.3.2(@types/react@19.3.0)(react@19.3.0))
-      valtio-reactive:
-        specifier: 0.2.0
-        version: 0.2.0(valtio@2.3.2(@types/react@19.3.0)(react@19.3.0))
       zod:
         specifier: 4.6.5
         version: 4.6.5
       zustand:
         specifier: ^5.0.15
-        version: 5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0))
+        version: 5.0.15(@types/react@19.3.0)(immer@11.1.21)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0))
     devDependencies:
       '@babel/core':
         specifier: ^7.29.7
@@ -1448,9 +1436,6 @@ packages:
     resolution: {integrity: sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w==}
     engines: {node: '>=12'}
 
-  structure-id@1.2.9:
-    resolution: {integrity: sha512-JXpm4DZLQqcioH+wooEc3jCFRlwu/pJvemuuNUv37gOWTVzdYgw1khGWPYulMxdkK7rlsi0pIc5gDFTw+pF8+A==}
-
   stylis@4.4.0:
     resolution: {integrity: sha512-5Z9ZpRzfuH6l/UAvCPAPUo3665Nk2wLaZU3x+TLHKVzIz33+sbJqbtrYoC3KD4/uVOr2Zp+L0LySezP9OHV9yA==}
 
@@ -1550,57 +1535,6 @@ packages:
     resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
-
-  valtio-auto-persist@2.2.3:
-    resolution: {integrity: sha512-qeeBt1vwRjW7qK64wHJ5A+pKuxbX3TZGsZtM7diEj1R5nGnnapKSw7XgCGyaj+J57jWgVlPUC4U5pqwSfC0mfg==}
-    peerDependencies:
-      '@react-native-async-storage/async-storage': ^2.1.2
-      expo-file-system: '*'
-      expo-secure-store: '*'
-      react-native-keychain: '*'
-    peerDependenciesMeta:
-      '@react-native-async-storage/async-storage':
-        optional: true
-      expo-file-system:
-        optional: true
-      expo-secure-store:
-        optional: true
-      react-native-keychain:
-        optional: true
-
-  valtio-persist@2.2.5:
-    resolution: {integrity: sha512-4baK/iuGeB4TuhM+1dF+BI1Or/3q58Q36BqKD5IcNokaW8eLzLgIr+77qZWr5OGuzLfu2kXAQe9cyhzc4BOzBw==}
-    peerDependencies:
-      '@react-native-async-storage/async-storage': ^2.1.2
-      expo-file-system: '*'
-      expo-secure-store: '*'
-      react-native-keychain: '*'
-    peerDependenciesMeta:
-      '@react-native-async-storage/async-storage':
-        optional: true
-      expo-file-system:
-        optional: true
-      expo-secure-store:
-        optional: true
-      react-native-keychain:
-        optional: true
-
-  valtio-plugin@1.11.4:
-    resolution: {integrity: sha512-Lq2V9LgV+XMeWmE/4HRcAWIjcuC0+B5xzYoSqZ1GLl1BhjCV3ynPSvac78LL7uCfji4DoCqHvqfoAQNnXp4xlQ==}
-    peerDependencies:
-      '@types/react': '>=18.0.0'
-      react: '>=18.0.0'
-      valtio: '>=2.1.4'
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
-      react:
-        optional: true
-
-  valtio-reactive@0.2.0:
-    resolution: {integrity: sha512-Zl1vr0w2S33QP9wBRX60p1LczyHrX+AWLB3iRl1doCdUTKaCziSj9GZIyrEIMykfjd0b3t27+X44phKOplcyfg==}
-    peerDependencies:
-      valtio: '>=2.0.0'
 
   valtio@2.3.2:
     resolution: {integrity: sha512-YXhWQei9IN/ZDce9rhL3trCq9+vVq8M1gWmKVdP3YSZ2gxsmmNWVbxXwf9yG6ffu/dAvAD91nevg8xirGr4Dhg==}
@@ -2990,8 +2924,6 @@ snapshots:
     dependencies:
       ansi-regex: 6.4.0
 
-  structure-id@1.2.9: {}
-
   stylis@4.4.0: {}
 
   tagged-tag@1.0.0: {}
@@ -3072,34 +3004,6 @@ snapshots:
     dependencies:
       react: 19.3.0
 
-  valtio-auto-persist@2.2.3(@types/react@19.3.0)(react@19.3.0):
-    dependencies:
-      proxy-compare: 3.0.1
-      structure-id: 1.2.9
-      valtio: 2.3.2(@types/react@19.3.0)(react@19.3.0)
-    transitivePeerDependencies:
-      - '@types/react'
-      - react
-
-  valtio-persist@2.2.5(@types/react@19.3.0)(react@19.3.0):
-    dependencies:
-      proxy-compare: 3.0.1
-      valtio: 2.3.2(@types/react@19.3.0)(react@19.3.0)
-    transitivePeerDependencies:
-      - '@types/react'
-      - react
-
-  valtio-plugin@1.11.4(@types/react@19.3.0)(react@19.3.0)(valtio@2.3.2(@types/react@19.3.0)(react@19.3.0)):
-    dependencies:
-      valtio: 2.3.2(@types/react@19.3.0)(react@19.3.0)
-    optionalDependencies:
-      '@types/react': 19.3.0
-      react: 19.3.0
-
-  valtio-reactive@0.2.0(valtio@2.3.2(@types/react@19.3.0)(react@19.3.0)):
-    dependencies:
-      valtio: 2.3.2(@types/react@19.3.0)(react@19.3.0)
-
   valtio@2.3.2(@types/react@19.3.0)(react@19.3.0):
     dependencies:
       proxy-compare: 3.0.1
@@ -3176,8 +3080,9 @@ snapshots:
 
   zod@4.6.5: {}
 
-  zustand@5.0.15(@types/react@19.3.0)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)):
+  zustand@5.0.15(@types/react@19.3.0)(immer@11.1.21)(react@19.3.0)(use-sync-external-store@1.7.0(react@19.3.0)):
     optionalDependencies:
       '@types/react': 19.3.0
+      immer: 11.1.21
       react: 19.3.0
       use-sync-external-store: 1.7.0(react@19.3.0)

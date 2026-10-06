@@ -20,6 +20,18 @@ export const useProxyValue = <T extends object, K extends keyof T>(
 };
 
 /**
+ * A value derived from a proxy (a primitive, compared by value), re-read on
+ * any change inside it and re-rendering only when the value itself changes.
+ */
+export const useProxyDerived = <T>(proxyObject: object, read: () => T): T => {
+  const subscribeToProxy = useCallback(
+    (onChange: () => void) => subscribe(proxyObject, onChange),
+    [proxyObject],
+  );
+  return useSyncExternalStore(subscribeToProxy, read);
+};
+
+/**
  * A list of strings read from a proxy, re-rendering only when the list
  * itself changes — a string signature is compared by value.
  */
@@ -27,13 +39,7 @@ const useProxyStrings = (
   proxyObject: object,
   read: () => readonly string[],
 ): string[] => {
-  const subscribeToProxy = useCallback(
-    (onChange: () => void) => subscribe(proxyObject, onChange),
-    [proxyObject],
-  );
-  const signature = useSyncExternalStore(subscribeToProxy, () =>
-    read().join(","),
-  );
+  const signature = useProxyDerived(proxyObject, () => read().join(","));
   return useMemo(() => (signature ? signature.split(",") : []), [signature]);
 };
 

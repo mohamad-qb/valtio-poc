@@ -3,11 +3,12 @@
  * of it reaches the production bundle.
  *
  * - Redux DevTools (browser extension, when installed): jotai's own devtools
- *   are React-only, so the store's `set` is wrapped here. Every action (a
- *   write atom with a `debugLabel`) is reported, with the app's state after
- *   it; so is whatever is set outside any action (an async action's sets
- *   after its `await`: a response arriving). No time travel: each deal's
- *   atoms are created with it, so a past state can't simply be set back.
+ *   are React-only, so the store's `set` is wrapped here. Every top-level set
+ *   is reported, with the app's state after it: an action (a write atom) by
+ *   its `debugLabel`, any other atom by its key. So is whatever is set outside
+ *   them (an async action's sets after its `await`: a response arriving). No
+ *   time travel: each deal's atoms are created with it, so a past state can't
+ *   simply be set back.
  * - `?debug` in the URL: the same actions, logged to the console.
  */
 import { atom, getDefaultStore } from "jotai/vanilla";
@@ -54,7 +55,7 @@ store.set = (target, ...args) => {
     return set(target, ...args);
   } finally {
     depth -= 1;
-    if (depth === 0 && target.debugLabel) report(target.debugLabel, args);
+    if (depth === 0) report(target.debugLabel ?? String(target), args);
   }
 };
 

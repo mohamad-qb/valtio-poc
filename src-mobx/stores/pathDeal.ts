@@ -1,4 +1,4 @@
-import { compareShallow, compareStructural, reaction } from "mobx";
+import { compareShallow, compareStructural, reaction, toJS } from "mobx";
 import { readDealKey } from "@shared/dealWrites.ts";
 import { getValueByPath } from "@shared/lib/path.ts";
 import { type PathDeal, createChangeHub } from "@shared/pathDeal.ts";
@@ -11,24 +11,19 @@ import type { Product } from "./productStore.ts";
 /**
  * A MobX deal as a `PathDeal`. Reads go through the observables; writes are
  * the deal's `writePaths` action. Each product is watched by its own
- * reaction, which MobX re-runs only when that product's data or issues change.
+ * reaction, which MobX re-runs only when that product's data changes.
  */
 export const createPathDeal = (deal: DealStore): PathDeal => {
-  const findProduct = (productId: string) => {
-    for (const groupId of deal.groupIds) {
-      const product = deal.groups[groupId]?.products[productId];
-      if (product) return { groupId, product };
-    }
-    return undefined;
-  };
-
   const subscribeToDeal = createChangeHub((emit) => {
     const productStops = new Map<string, () => void>();
+    // the product's data as plain values, compared structurally: only a real
+    // change notifies (NaN, ±Infinity, 0 and -0 all told apart); issues
+    // follow from the data, so they change only with it
     const watchProduct = (product: Product) =>
       reaction(
-        // serializing reads, so tracks, every field; plus every field's issues
-        () => JSON.stringify([product.data, Object.values(product.fields).map((field) => field.issues.length)]),
+        () => toJS(product.data),
         () => emit({ kind: "products", ids: [product.id] }),
+        { equals: compareStructural },
       );
     const watchProducts = () => {
       const current = new Set(deal.products.map(({ id }) => id));
@@ -81,7 +76,7 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
         return { id, title: group.ui.title, productIds: group.productIds };
       }),
     getProduct: (productId) => {
-      const found = findProduct(productId);
+      const found = deal.findProduct(productId);
       return found && { groupId: found.groupId, title: found.product.ui.title, data: found.product.data };
     },
     readPath: (path) => {
@@ -92,7 +87,7 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
       return product && getValueByPath(product.data, target.dataPath);
     },
     writePaths: (writes) => deal.writePaths(writes),
-    fieldIssues: (productId, fieldId) => findProduct(productId)?.product.fields[fieldId]?.issues ?? noIssues,
+    fieldIssues: (productId, fieldId) => deal.findProduct(productId)?.product.fields[fieldId]?.issues ?? noIssues,
     getSettings: () => ({ isInternal: deal.isInternal, hedgeType: deal.hedgeType }),
     getOptions: () => optionsStore.byKey,
     subscribe: subscribeToDeal,

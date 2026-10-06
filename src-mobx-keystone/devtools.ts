@@ -4,28 +4,32 @@
  *
  * - Redux DevTools (browser extension, when installed): keystone's own
  *   adapter. Every action, nested ones as `parent >>> child`, with the tree's
- *   snapshot after it, and time travel. The tabs and the shared options are
- *   two instances.
+ *   snapshot after it, and time travel (a jump comes back as recorded:
+ *   nothing is re-priced). One instance: the shared options are in the tree.
  * - `?debug` in the URL: each outermost action, logged to the console.
  */
 import { connectReduxDevTools, onActionMiddleware } from "mobx-keystone";
-import { type DevtoolsMessage, connectExtension, isDebugEnabled } from "@shared/reduxDevtools.ts";
+import { type DevtoolsConnection, type DevtoolsMessage, connectExtension, isDebugEnabled } from "@shared/reduxDevtools.ts";
+import { restoring } from "./stores/dealModel.ts";
 import { multiTabStore } from "./stores/multiTabStore.ts";
-import { optionsStore } from "./stores/optionsStore.ts";
+
+const name = "Deal editor (MobX Keystone)";
 
 // the adapter takes the `remotedev` package only to read the state out of a
 // monitor message; the extension's own connection does the rest
 const remotedev = { extractState: (message: DevtoolsMessage) => JSON.parse(message.state ?? "null") };
 
-const connectTree = (name: string, tree: object) => {
-  const connection = connectExtension(name);
-  if (connection) connectReduxDevTools(remotedev, connection, tree);
-  if (isDebugEnabled) {
-    onActionMiddleware(tree, {
-      onFinish: ({ actionName, targetPath, args }) => console.log(`[${name}] [/${targetPath.join("/")}] ${actionName}`, ...args),
-    });
-  }
-};
+/** The connection, with whatever the monitor applies (a jump, a reset) restored as recorded. */
+const restoringFrom = (connection: DevtoolsConnection): DevtoolsConnection => ({
+  init: (state) => connection.init(state),
+  send: (action, state) => connection.send(action, state),
+  subscribe: (listener) => connection.subscribe((message) => restoring(() => listener(message))),
+});
 
-connectTree("Deal editor (MobX Keystone)", multiTabStore);
-connectTree("Options (MobX Keystone)", optionsStore);
+const connection = connectExtension(name);
+if (connection) connectReduxDevTools(remotedev, restoringFrom(connection), multiTabStore);
+if (isDebugEnabled) {
+  onActionMiddleware(multiTabStore, {
+    onFinish: ({ actionName, targetPath, args }) => console.log(`[${name}] [/${targetPath.join("/")}] ${actionName}`, ...args),
+  });
+}

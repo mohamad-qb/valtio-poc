@@ -8,6 +8,21 @@ import {
   optionsLoaded,
   optionsLoading,
 } from "@shared/options/optionsSource.ts";
+import type { OptionsRequest } from "@shared/products/productWrites.ts";
+
+/** What a deal does with a list that arrived: reconcile its products still on that parameter. */
+export type OptionsListener = (request: OptionsRequest, options: readonly Option[]) => void;
+
+const listeners = new Set<OptionsListener>();
+
+/**
+ * Hears every list that arrives, whichever deal asked: the lists are shared,
+ * so no deal may keep a value its list no longer offers. Returns the unsubscribe.
+ */
+export const onOptionsLoaded = (listener: OptionsListener) => {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+};
 
 /** Every async dropdown's options, shared by every deal. */
 const Options = types
@@ -27,25 +42,32 @@ const Options = types
         setState(key, optionsLoading(self.byKey[key]));
         self.pending += 1;
       },
-      finished(key: string, state: OptionsState) {
-        setState(key, state);
+      /**
+       * A list arrived: the listeners write first, while the load still counts
+       * as pending, in this one action, so autocalc sees the reconciled deal only.
+       */
+      loaded(request: OptionsRequest, options: readonly Option[]) {
+        listeners.forEach((listener) => listener(request, options));
+        const key = optionsKey(request.source, request.param);
+        setState(key, optionsLoaded(self.byKey[key], options));
+        self.pending -= 1;
+      },
+      failed(key: string) {
+        setState(key, optionsFailed(self.byKey[key]));
         self.pending -= 1;
       },
     };
   })
   .actions((self) => ({
-    /** (Re)loads; resolves with the options, or `undefined` on failure. */
-    async load(source: OptionsSource, param: string): Promise<readonly Option[] | undefined> {
+    /** (Re)loads. */
+    async load(source: OptionsSource, param: string): Promise<void> {
       const key = optionsKey(source, param);
       self.started(key);
       try {
-        const options = await source.load(param);
         // after an `await` we're outside the action: changes go through actions
-        self.finished(key, optionsLoaded(self.byKey[key], options));
-        return options;
+        self.loaded({ source, param }, await source.load(param));
       } catch {
-        self.finished(key, optionsFailed(self.byKey[key]));
-        return undefined;
+        self.failed(key);
       }
     },
   }));

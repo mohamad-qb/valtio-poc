@@ -8,6 +8,7 @@ import {
   optionsLoaded,
   optionsLoading,
 } from "@shared/options/optionsSource.ts";
+import type { OptionsRequest } from "@shared/products/productWrites.ts";
 
 export type OptionsStoreState = {
   /** Loaded options per source and parameter (see `optionsKey`). */
@@ -19,11 +20,24 @@ export type OptionsStoreState = {
 /** Every async dropdown's options, shared by every deal. */
 export const options$ = observable<OptionsStoreState>({ byKey: {}, pending: 0 });
 
-/** (Re)loads; resolves with the options, or `undefined` on failure. */
-export const loadOptions = async (
-  source: OptionsSource,
-  param: string,
-): Promise<readonly Option[] | undefined> => {
+/** What a deal does with options as they arrive: reconcile its products. */
+export type OnOptionsLoaded = (request: OptionsRequest, options: readonly Option[]) => void;
+
+const reconciles = new Set<OnOptionsLoaded>();
+
+/** Registers a deal's reconcile, called whenever options arrive; returns the unregister. */
+export const onOptionsLoaded = (reconcile: OnOptionsLoaded) => {
+  reconciles.add(reconcile);
+  return () => void reconciles.delete(reconcile);
+};
+
+/**
+ * (Re)loads. The options are shared, so when they arrive every deal
+ * reconciles (not just the one that asked), in the batch that stores them
+ * and ends the load: autocalc, which waits for it, never prices data that is
+ * about to change.
+ */
+export const loadOptions = async (source: OptionsSource, param: string): Promise<void> => {
   const entry$ = options$.byKey[optionsKey(source, param)];
   // unchanged states come back as the same object: nothing to write
   const update = (next: OptionsState) => {
@@ -33,18 +47,10 @@ export const loadOptions = async (
     options$.pending.set((pending) => pending + 1);
     update(optionsLoading(entry$.peek()));
   });
-  try {
-    const options = await source.load(param);
-    batch(() => {
-      update(optionsLoaded(entry$.peek(), options));
-      options$.pending.set((pending) => pending - 1);
-    });
-    return options;
-  } catch {
-    batch(() => {
-      update(optionsFailed(entry$.peek()));
-      options$.pending.set((pending) => pending - 1);
-    });
-    return undefined;
-  }
+  const options = await source.load(param).catch(() => undefined);
+  batch(() => {
+    update(options ? optionsLoaded(entry$.peek(), options) : optionsFailed(entry$.peek()));
+    if (options) reconciles.forEach((reconcile) => reconcile({ source, param }, options));
+    options$.pending.set((pending) => pending - 1);
+  });
 };

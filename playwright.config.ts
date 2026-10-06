@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-// browser tests against the dev server: every spec runs for all three apps
+// browser tests against the dev server: every spec runs for every app
 export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: true,

@@ -1,13 +1,16 @@
 import {
   type Store,
+  clearNode,
   combine,
   createEffect,
   createEvent,
+  createNode,
   createStore,
   merge,
   sample as connect,
+  withRegion,
 } from "effector";
-import { keyval, lens } from "@effector/model";
+import { keyval } from "@effector/model";
 import { calculatePrice } from "@shared/api/calculate.ts";
 import {
   type CalcState,
@@ -21,13 +24,12 @@ import {
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
 import { type DealSettingsState, hedgeTypesFor, initialDealSettings } from "@shared/dealSettings.ts";
-import { type DealProduct, readDealKey, routeWrites } from "@shared/dealWrites.ts";
+import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
 import { type GroupType, groupDefinitions, groupTitle, productUi } from "@shared/groups.ts";
-import { getValueByPath } from "@shared/lib/path.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import type { Option } from "@shared/options/optionsSource.ts";
-import { type PathWrite, parsePath } from "@shared/paths.ts";
+import type { PathWrite } from "@shared/paths.ts";
 import { type ProductData, type ProductUi, definitionOf } from "@shared/products/productRegistry.ts";
 import {
   type OptionsRequest,
@@ -114,267 +116,247 @@ const dealProducts = (groups: readonly GroupItem[]): DealProduct[] =>
  * Every write is a batch of dot paths (`writePathsAction`), routed by the
  * shared rules: the deal's own stores take theirs, and the products get
  * theirs in one api call addressed to their groups.
+ *
+ * Its units live in their own region: `dispose` clears them all, with their
+ * links to the shared options effects.
  */
 export const createDealStore = (devtools: DealDevtools) => {
-  const actions = {
-    addGroupAction: createEvent<GroupType>(),
-    cloneGroupAction: createEvent<string>(),
-    removeGroupAction: createEvent<string>(),
-    /** Writes values at dot paths, in order, as one batch: an edit, a paste, anything the old app wrote. */
-    writePathsAction: createEvent<readonly PathWrite[]>(),
-    /** Calculates now, if the deal is ready (the manual Calculate). */
-    calculateAction: createEvent(),
-  };
+  const region = createNode();
+  return withRegion(region, () => {
+    const actions = {
+      addGroupAction: createEvent<GroupType>(),
+      cloneGroupAction: createEvent<string>(),
+      removeGroupAction: createEvent<string>(),
+      /** Writes values at dot paths, in order, as one batch: an edit, a paste, anything the old app wrote. */
+      writePathsAction: createEvent<readonly PathWrite[]>(),
+      /** Calculates now, if the deal is ready (the manual Calculate). */
+      calculateAction: createEvent(),
+      /** Loads the deal column's own options (its default parameters): its tab does, when it opens the deal. */
+      loadDealOptionsAction: createEvent(),
+    };
 
-  // --- state
-  const groups = keyval(createGroup);
-  const $groupsById = groups.$items as unknown as Store<GroupItem[]>;
-  const $order = createStore<string[]>([]);
-  const $dealFields = createStore<DealFieldsState>(initialDealFields);
-  const $settings = createStore<DealSettingsState>(initialDealSettings);
+    // --- state
+    const groups = keyval(createGroup);
+    const $groupsById: Store<GroupItem[]> = groups.$items;
+    const $order = createStore<string[]>([]);
+    const $dealFields = createStore<DealFieldsState>(initialDealFields);
+    const $settings = createStore<DealSettingsState>(initialDealSettings);
 
-  // --- derived
-  /** The groups in display order. */
-  const $groups = combine($groupsById, $order, (items, order) => {
-    const byId = new Map(items.map((group) => [group.id, group]));
-    return order.flatMap((id) => byId.get(id) ?? []);
-  });
-  const $isInternal = $settings.map((settings) => settings.isInternal);
-  const $hedgeTypes = $isInternal.map(hedgeTypesFor);
-  /** Issues per product id: each product's own derived store, re-validated only when its data changes. */
-  const $validation = $groups.map((items) =>
-    Object.fromEntries(productsOf(items).map((product) => [product.id, product.issues])),
-  );
-  const $hasValidationErrors = $groups.map((items) =>
-    productsOf(items).some((product) => Object.keys(product.issues).length > 0),
-  );
+    // --- derived
+    /** The groups in display order. */
+    const $groups = combine($groupsById, $order, (items, order) => {
+      const byId = new Map(items.map((group) => [group.id, group]));
+      return order.flatMap((id) => byId.get(id) ?? []);
+    });
+    const $isInternal = $settings.map((settings) => settings.isInternal);
+    const $hedgeTypes = $isInternal.map(hedgeTypesFor);
+    /** Each product's issues are its own derived store, re-validated only when its data changes. */
+    const $hasValidationErrors = $groups.map((items) =>
+      productsOf(items).some((product) => Object.keys(product.issues).length > 0),
+    );
 
-  // --- groups: built (new ids) from the current deal values, inserted at a position
-  const buildGroup = (groupType: GroupType, defaults: DealFieldsState, position: number, source?: GroupItem) => ({
-    id: uuid(),
-    groupType,
-    ui: { index: position, title: groupTitle(groupType, position) },
-    products: groupDefinitions[groupType].productTypes.map((productType, index) => {
-      const sourceData = source?.products[index]?.data;
-      return {
-        id: uuid(),
-        ui: productUi(productType, index),
-        data: sourceData ? structuredClone(sourceData) : definitionOf(productType).createData(defaults),
-      };
-    }),
-  });
-  const groupCreated = merge([
-    connect({
-      clock: actions.addGroupAction,
-      source: { defaults: $dealFields, order: $order },
-      fn: ({ defaults, order }, groupType) => ({
-        group: buildGroup(groupType, defaults, order.length),
-        position: order.length,
+    // --- groups: built (new ids) from the current deal values, inserted at a position
+    const buildGroup = (groupType: GroupType, defaults: DealFieldsState, position: number, source?: GroupItem) => ({
+      id: uuid(),
+      groupType,
+      ui: { index: position, title: groupTitle(groupType, position) },
+      products: groupDefinitions[groupType].productTypes.map((productType, index) => {
+        const sourceData = source?.products[index]?.data;
+        return {
+          id: uuid(),
+          ui: productUi(productType, index),
+          data: sourceData ? structuredClone(sourceData) : definitionOf(productType).createData(defaults),
+        };
       }),
-    }),
-    connect({
-      clock: actions.cloneGroupAction,
-      source: { defaults: $dealFields, order: $order, items: $groupsById },
-      filter: ({ order }, groupId) => order.includes(groupId),
-      fn: ({ defaults, order, items }, groupId) => {
-        const source = items.find((group) => group.id === groupId)!;
-        const position = order.indexOf(groupId) + 1;
-        return { group: buildGroup(source.groupType, defaults, position, source), position };
-      },
-    }),
-  ]);
-  connect({ clock: groupCreated, fn: ({ group }) => group as never, target: groups.edit.add });
-  $order.on(groupCreated, (order, { group, position }) => [
-    ...order.slice(0, position),
-    group.id,
-    ...order.slice(position),
-  ]);
-  const groupRemoved = connect({
-    clock: actions.removeGroupAction,
-    source: $order,
-    filter: (order, groupId) => order.includes(groupId),
-    fn: (_, groupId) => groupId,
-  });
-  connect({ clock: groupRemoved, target: groups.edit.remove });
-  $order.on(groupRemoved, (order, groupId) => order.filter((id) => id !== groupId));
-  // titles follow positions: only groups whose position changed get a new `ui`
-  const groupsReindexed = connect({
-    clock: $order,
-    source: $groupsById,
-    fn: (items, order) =>
-      items.flatMap((group) => {
-        const index = order.indexOf(group.id);
-        const title = groupTitle(group.groupType, index);
-        return index < 0 || (group.ui.index === index && group.ui.title === title)
-          ? []
-          : [{ id: group.id, ui: { index, title } }];
+    });
+    const groupCreated = merge([
+      connect({
+        clock: actions.addGroupAction,
+        source: { defaults: $dealFields, order: $order },
+        fn: ({ defaults, order }, groupType) => ({
+          group: buildGroup(groupType, defaults, order.length),
+          position: order.length,
+        }),
       }),
-  });
-  connect({
-    clock: groupsReindexed,
-    filter: (updates) => updates.length > 0,
-    fn: (updates) => updates as never,
-    target: groups.edit.update,
-  });
-
-  // --- writes by path: routed by the shared rules; the products' writes in one keyed api call
-  const routed = connect({
-    clock: actions.writePathsAction,
-    source: { groups: $groups, dealFields: $dealFields, settings: $settings },
-    fn: ({ groups: items, dealFields, settings }, writes) =>
-      routeWrites({ dealFields, settings, products: dealProducts(items) }, writes),
-  });
-  $dealFields.on(routed, (_, { dealFields }) => dealFields);
-  $settings.on(routed, (_, { settings }) => settings);
-  connect({
-    clock: routed,
-    filter: ({ products }) => products.size > 0,
-    fn: ({ products }) => {
-      const byGroup = new Map<string, ProductWrites[]>();
-      for (const [productId, { groupId, writes }] of products) {
-        if (!byGroup.has(groupId)) byGroup.set(groupId, []);
-        byGroup.get(groupId)!.push({ productId, writes });
-      }
-      return { key: [...byGroup.keys()], data: [...byGroup.values()] };
-    },
-    target: groups.api.writeProducts,
-  });
-
-  // --- async options (e.g. Fixing Source): loaded for a new group, reloaded on change
-  connect({
-    clock: groupCreated,
-    fn: ({ group }) => uniqueRequests(group.products.flatMap(({ data }) => optionsRequestsOf(data))),
-    target: loadAllOptionsEffect,
-  });
-  connect({
-    clock: routed,
-    filter: ({ requests }) => requests.length > 0,
-    fn: ({ requests }) => requests,
-    target: loadAllOptionsEffect,
-  });
-  // options arrived: every product still on that parameter reconciles (stale responses: ignored)
-  connect({
-    clock: loadOptionsEffect.done,
-    source: $order,
-    filter: (order) => order.length > 0,
-    fn: (order, { params, result }) => ({ key: order, data: order.map(() => ({ request: params, options: result })) }),
-    target: groups.api.reconcileOptions,
-  });
-  // the deal column's own options (its default parameters), loaded with the deal
-  loadAllOptionsEffect(dealOptionsRequests);
-
-  // --- calc: whenever the deal is ready, with autocalc; any edit outdates the price
-  const $calc = createStore<CalcState>(initialCalcState);
-  const $isReady = combine(
-    $hasValidationErrors,
-    loadOptionsEffect.inFlight,
-    loadAllOptionsEffect.inFlight,
-    (hasErrors, loading, loadingAll) => isCalcReady(hasErrors, loading + loadingAll),
-  );
-  const calculateEffect = createEffect(({ products }: { requestId: number; products: ProductData[] }) =>
-    calculatePrice(products),
-  );
-  $calc
-    .on($groupsById, (calc) => calcInputsChanged(calc))
-    .on(calculateEffect, (calc, { requestId }) => calcStarted(calc, requestId))
-    .on(calculateEffect.done, (calc, { params, result }) => calcSucceeded(calc, params.requestId, result))
-    .on(calculateEffect.fail, (calc, { params }) => calcFailed(calc, params.requestId));
-  const calcRequest = ({ calc, items }: { calc: CalcState; items: GroupItem[] }) => ({
-    requestId: calc.requestId + 1,
-    products: productsOf(items).flatMap(({ data }) => (data ? [data] : [])),
-  });
-  connect({
-    clock: actions.calculateAction,
-    source: { calc: $calc, items: $groups, isReady: $isReady },
-    filter: ({ isReady }) => isReady,
-    fn: calcRequest,
-    target: calculateEffect,
-  });
-  const $shouldAutocalc = combine(
-    devtools.$isAutocalcEnabled,
-    $isReady,
-    $calc,
-    (enabled, isReady, calc) => enabled && isReady && needsAutocalc(calc),
-  );
-  connect({
-    clock: $shouldAutocalc,
-    source: { calc: $calc, items: $groups, should: $shouldAutocalc },
-    filter: ({ should }) => should,
-    fn: calcRequest,
-    target: calculateEffect,
-  });
-
-  // --- reading by path
-  const findProduct = (items: readonly GroupItem[], groupId: string, productId: string) =>
-    items.find((group) => group.id === groupId)?.products.find((product) => product.id === productId);
-
-  /** The value at a dot path now (`undefined` where there is none). */
-  const readPath = (path: string): unknown => {
-    const target = parsePath(path);
-    if (!target) return undefined;
-    if (target.kind === "deal") return readDealKey(target.key, $dealFields.getState(), $settings.getState());
-    const data = findProduct($groupsById.getState(), target.groupId, target.productId)?.data;
-    return data ? getValueByPath(data, target.dataPath) : undefined;
-  };
-
-  /**
-   * A store of the value at a dot path, updated only when that value
-   * changes; one per path. A product path reads its group through the
-   * collection's lens, so other groups' writes never reach it.
-   */
-  const pathStores = new Map<string, Store<unknown>>();
-  const pathStore = (path: string): Store<unknown> => {
-    const cached = pathStores.get(path);
-    if (cached) return cached;
-    const target = parsePath(path);
-    let store: Store<unknown>;
-    if (!target || target.kind === "deal") {
-      store = combine($dealFields, $settings, () => readPath(path));
-    } else {
-      const $group = lens(groups).itemStore(createStore(target.groupId)) as unknown as Store<GroupItem | null>;
-      store = $group.map(
-        (group) => {
-          const data = group?.products.find((product) => product.id === target.productId)?.data;
-          return data ? getValueByPath(data, target.dataPath) : undefined;
+      connect({
+        clock: actions.cloneGroupAction,
+        source: { defaults: $dealFields, order: $order, items: $groupsById },
+        filter: ({ order }, groupId) => order.includes(groupId),
+        fn: ({ defaults, order, items }, groupId) => {
+          const source = items.find((group) => group.id === groupId)!;
+          const position = order.indexOf(groupId) + 1;
+          return { group: buildGroup(source.groupType, defaults, position, source), position };
         },
-        { skipVoid: false },
-      );
-    }
-    pathStores.set(path, store);
-    return store;
-  };
+      }),
+    ]);
+    connect({ clock: groupCreated, fn: ({ group }) => group, target: groups.edit.add });
+    $order.on(groupCreated, (order, { group, position }) => [
+      ...order.slice(0, position),
+      group.id,
+      ...order.slice(position),
+    ]);
+    const groupRemoved = connect({
+      clock: actions.removeGroupAction,
+      source: $order,
+      filter: (order, groupId) => order.includes(groupId),
+      fn: (_, groupId) => groupId,
+    });
+    connect({ clock: groupRemoved, target: groups.edit.remove });
+    $order.on(groupRemoved, (order, groupId) => order.filter((id) => id !== groupId));
+    // titles follow positions: only groups whose position changed get a new `ui`
+    const groupsReindexed = connect({
+      clock: $order,
+      source: $groupsById,
+      fn: (items, order) =>
+        items.flatMap((group) => {
+          const index = order.indexOf(group.id);
+          const title = groupTitle(group.groupType, index);
+          return index < 0 || (group.ui.index === index && group.ui.title === title)
+            ? []
+            : [{ id: group.id, ui: { index, title } }];
+        }),
+    });
+    connect({
+      clock: groupsReindexed,
+      filter: (updates) => updates.length > 0,
+      target: groups.edit.update,
+    });
 
-  // --- spot price: kept outside the stores, ticks never notify subscribers
-  const spotPriceStream = createSpotPriceStream();
-  const stopSpotPriceStream = devtools.$isSpotPriceStreamEnabled.watch((enabled) =>
-    enabled ? spotPriceStream.start() : spotPriceStream.stop(),
-  );
+    // --- writes by path: routed by the shared rules; the products' writes in one keyed api call
+    const routed = connect({
+      clock: actions.writePathsAction,
+      source: { groups: $groups, dealFields: $dealFields, settings: $settings },
+      fn: ({ groups: items, dealFields, settings }, writes) =>
+        routeWrites({ dealFields, settings, products: dealProducts(items) }, writes),
+    });
+    $dealFields.on(routed, (_, { dealFields }) => dealFields);
+    // unchanged settings come back as the same object: no update
+    $settings.on(routed, (_, { settings }) => settings);
+    connect({
+      clock: routed,
+      filter: ({ products }) => products.size > 0,
+      fn: ({ products }) => {
+        const byGroup = new Map<string, ProductWrites[]>();
+        for (const [productId, { groupId, writes }] of products) {
+          if (!byGroup.has(groupId)) byGroup.set(groupId, []);
+          byGroup.get(groupId)!.push({ productId, writes });
+        }
+        return { key: [...byGroup.keys()], data: [...byGroup.values()] };
+      },
+      target: groups.api.writeProducts,
+    });
 
-  return {
-    actions,
-    /** The groups collection (`@effector/model`), for its lenses and api. */
-    groups,
-    // stores
-    $order,
-    $groups,
-    $dealFields,
-    $settings,
-    $isInternal,
-    $hedgeTypes,
-    $validation,
-    $hasValidationErrors,
-    $calc,
-    $isReady,
-    // by path
-    readPath,
-    pathStore,
-    // outside the stores
-    spotPriceStream,
-    dispose: () => {
-      stopSpotPriceStream();
-      spotPriceStream.stop();
-    },
-  };
+    // --- async options (e.g. Fixing Source): loaded for a new group, reloaded on change
+    connect({
+      clock: actions.loadDealOptionsAction,
+      fn: () => dealOptionsRequests,
+      target: loadAllOptionsEffect,
+    });
+    connect({
+      clock: groupCreated,
+      fn: ({ group }) => uniqueRequests(group.products.flatMap(({ data }) => optionsRequestsOf(data))),
+      target: loadAllOptionsEffect,
+    });
+    connect({
+      clock: routed,
+      filter: ({ requests }) => requests.length > 0,
+      fn: ({ requests }) => requests,
+      target: loadAllOptionsEffect,
+    });
+    // options arrived, for any deal: every product still on that parameter
+    // reconciles (stale responses: ignored). A deal on that parameter would
+    // otherwise keep a value the server no longer offers.
+    connect({
+      clock: loadOptionsEffect.done,
+      source: $order,
+      filter: (order) => order.length > 0,
+      fn: (order, { params, result }) => ({ key: order, data: order.map(() => ({ request: params, options: result })) }),
+      target: groups.api.reconcileOptions,
+    });
+
+    // --- calc: whenever the deal is ready, with autocalc; any edit outdates the price
+    const $calc = createStore<CalcState>(initialCalcState);
+    const $isReady = combine(
+      $hasValidationErrors,
+      loadOptionsEffect.inFlight,
+      loadAllOptionsEffect.inFlight,
+      (hasErrors, loading, loadingAll) => isCalcReady(hasErrors, loading + loadingAll),
+    );
+    const $shouldAutocalc = combine(
+      devtools.$isAutocalcEnabled,
+      $isReady,
+      $calc,
+      (enabled, isReady, calc) => enabled && isReady && needsAutocalc(calc),
+    );
+    /**
+     * One batch, one change. `@effector/model` applies a batch to the
+     * collection one group at a time (each item updates on its own), so the
+     * price follows the groups only once the batch has settled: an effect
+     * runs after every pure update of its launch. The first to finish
+     * outdates the price, once, and autocalc then sees the whole batch.
+     */
+    const settleFx = createEffect(() => {});
+    connect({ clock: $groupsById, target: settleFx });
+    connect({ clock: $shouldAutocalc, target: settleFx });
+    const $unsettled = createStore(false).on($groupsById, () => true);
+    const groupsSettled = connect({ clock: settleFx.finally, source: $unsettled, filter: Boolean });
+    $unsettled.reset(groupsSettled);
+
+    const calculateEffect = createEffect(({ products }: { requestId: number; products: ProductData[] }) =>
+      calculatePrice(products),
+    );
+    $calc
+      .on(groupsSettled, (calc) => calcInputsChanged(calc))
+      .on(calculateEffect, (calc, { requestId }) => calcStarted(calc, requestId))
+      .on(calculateEffect.done, (calc, { params, result }) => calcSucceeded(calc, params.requestId, result))
+      .on(calculateEffect.fail, (calc, { params }) => calcFailed(calc, params.requestId));
+    const calcRequest = ({ calc, items }: { calc: CalcState; items: GroupItem[] }) => ({
+      requestId: calc.requestId + 1,
+      products: productsOf(items).flatMap(({ data }) => (data ? [data] : [])),
+    });
+    connect({
+      clock: actions.calculateAction,
+      source: { calc: $calc, items: $groups, isReady: $isReady },
+      filter: ({ isReady }) => isReady,
+      fn: calcRequest,
+      target: calculateEffect,
+    });
+    connect({
+      clock: settleFx.finally,
+      source: { calc: $calc, items: $groups, should: $shouldAutocalc },
+      filter: ({ should }) => should,
+      fn: calcRequest,
+      target: calculateEffect,
+    });
+
+    // --- spot price: kept outside the stores, ticks never notify subscribers
+    // (the watcher is in the region: `dispose` clears it)
+    const spotPriceStream = createSpotPriceStream();
+    devtools.$isSpotPriceStreamEnabled.watch((enabled) => (enabled ? spotPriceStream.start() : spotPriceStream.stop()));
+
+    return {
+      actions,
+      /** The groups collection (`@effector/model`), for its lenses and api. */
+      groups,
+      // stores
+      $order,
+      $groups,
+      $dealFields,
+      $settings,
+      $isInternal,
+      $hedgeTypes,
+      $hasValidationErrors,
+      $calc,
+      $isReady,
+      // outside the stores
+      spotPriceStream,
+      /** Drops everything the deal is subscribed to (its units, their links to shared units) and stops its stream. */
+      dispose: () => {
+        clearNode(region);
+        spotPriceStream.stop();
+      },
+    };
+  });
 };
 
 export type DealStore = ReturnType<typeof createDealStore>;

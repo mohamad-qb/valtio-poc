@@ -16,6 +16,7 @@ import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
 import { type GroupType, groupTitle } from "@shared/groups.ts";
 import { setIn } from "@shared/lib/path.ts";
+import type { Option } from "@shared/options/optionsSource.ts";
 import type { PathWrite } from "@shared/paths.ts";
 import {
   type OptionsRequest,
@@ -46,6 +47,8 @@ export type DealState = DealFieldsState &
       writePaths(writes: readonly PathWrite[]): void;
       /** Calculates now, if ready (the manual Calculate). */
       calculate(): void;
+      /** Drops everything the deal subscribed to, and stops its stream. */
+      dispose(): void;
     };
   };
 
@@ -106,21 +109,20 @@ export const createDealStore = (devtoolsStore: DevToolsStore): DealStore => {
   });
 
   /**
-   * Loads options. When they arrive, every product still on that parameter
-   * reconciles before they count as loaded: autocalc, which waits for them,
-   * never prices data that is about to change.
+   * Options arrived (for any deal: the options store calls every deal, before
+   * the load counts as done): each product still on that parameter reconciles.
    */
-  const loadOptions = (requests: readonly OptionsRequest[]) => {
-    for (const request of requests) {
-      void optionsStore.getState().actions.load(request.source, request.param, (options) => {
-        const { groups } = dealStore.getState();
-        let next = groups;
-        for (const { groupId, productId, data } of dealProducts()) {
-          next = applyProductWrites(next, groupId, productId, reconcileWrites(data, request, options));
-        }
-        if (next !== groups) dealStore.setState(groupsChanged(next), false, "reconcileOptions");
-      });
+  const reconcileOptions = (request: OptionsRequest, options: readonly Option[]) => {
+    const { groups } = dealStore.getState();
+    let next = groups;
+    for (const { groupId, productId, data } of dealProducts()) {
+      next = applyProductWrites(next, groupId, productId, reconcileWrites(data, request, options));
     }
+    if (next !== groups) dealStore.setState(groupsChanged(next), false, "reconcileOptions");
+  };
+
+  const loadOptions = (requests: readonly OptionsRequest[]) => {
+    for (const { source, param } of requests) void optionsStore.getState().actions.load(source, param);
   };
 
   /**
@@ -205,15 +207,22 @@ export const createDealStore = (devtoolsStore: DevToolsStore): DealStore => {
             const state = get();
             if (!selectIsReady(state, optionsStore.getState().pending)) return;
             const requestId = state.calc.requestId + 1;
-            set({ calc: calcStarted(state.calc, requestId) }, false, "calculate");
             // a superseded request's response leaves `calc` as it is: no `set`, nobody notified
             const settle = (calc: CalcState, action: string) => {
               if (calc !== get().calc) set({ calc }, false, action);
             };
+            // sent before anyone hears it started: a listener that throws then can't
+            // leave the deal "calculating" with nothing in flight
             calculatePrice(dealProducts().map(({ data }) => data)).then(
               (price) => settle(calcSucceeded(get().calc, requestId, price), "calculated"),
               () => settle(calcFailed(get().calc, requestId), "calculationFailed"),
             );
+            set({ calc: calcStarted(state.calc, requestId) }, false, "calculate");
+          },
+          dispose() {
+            stops.forEach((stop) => stop());
+            spotPriceStream.stop();
+            dealStore.devtools?.cleanup(); // the extension's connection holds the store
           },
         },
       }),
@@ -221,10 +230,13 @@ export const createDealStore = (devtoolsStore: DevToolsStore): DealStore => {
         name: `Deal ${dealCount} (Zustand)`,
         enabled: import.meta.env.DEV,
         // time travel sets the state back from its JSON: leave out what isn't
-        // data (the actions, the stream), so a jump keeps the live ones
+        // data (the actions, the stream), so a jump keeps the live ones, and the
+        // calculation, so a jump never leaves it "calculating" with nothing in
+        // flight, or starts a request. The middleware takes no reviver: an
+        // empty number (NaN) comes back `null`
         serialize: {
           replacer: (key: string, value: unknown) =>
-            key === "actions" || key === "spotPriceStream" ? undefined : value,
+            key === "actions" || key === "spotPriceStream" || key === "calc" ? undefined : value,
         },
       },
     ),
@@ -238,10 +250,6 @@ export const createDealStore = (devtoolsStore: DevToolsStore): DealStore => {
     }
   };
   followSpotPriceStream(devtoolsStore.getState());
-  devtoolsStore.subscribe(followSpotPriceStream);
-
-  // the deal column's own options (its default parameters), loaded with the deal
-  loadOptions(dealOptionsRequests);
 
   // autocalc: whenever the deal is ready and its price missing or outdated.
   // Listeners run right after each `set`, and validation is a selector over
@@ -256,9 +264,16 @@ export const createDealStore = (devtoolsStore: DevToolsStore): DealStore => {
       state.actions.calculate();
     }
   };
-  dealStore.subscribe(autocalc);
-  optionsStore.subscribe(autocalc);
-  devtoolsStore.subscribe(autocalc);
+  const stops = [
+    devtoolsStore.subscribe(followSpotPriceStream),
+    optionsStore.getState().actions.onLoaded(reconcileOptions),
+    dealStore.subscribe(autocalc),
+    optionsStore.subscribe(autocalc),
+    devtoolsStore.subscribe(autocalc),
+  ];
+
+  // the deal column's own options (its default parameters), loaded with the deal
+  loadOptions(dealOptionsRequests);
 
   return dealStore;
 };

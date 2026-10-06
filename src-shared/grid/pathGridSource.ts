@@ -1,7 +1,8 @@
 import { syncedFieldIds } from "../dealFields.ts";
 import { isDealSetting } from "../dealSettings.ts";
 import { type ProductFieldId, asyncOptionFields, fields } from "../fields.ts";
-import type { PathDeal } from "../pathDeal.ts";
+import { getValueByPath } from "../lib/path.ts";
+import type { PathDeal, PathDealGroup } from "../pathDeal.ts";
 import { type PathWrite, productPath } from "../paths.ts";
 import { definitionOfData } from "../products/productWrites.ts";
 import {
@@ -22,10 +23,20 @@ const productCells = (productId: string): CellRef[] =>
   fields.map(({ id }) => ({ columnId: productId, fieldId: id }));
 
 /**
+ * A group may carry its products' titles (in `productIds` order): then the
+ * columns are listed without looking up each product.
+ */
+export type TitledPathDealGroup = PathDealGroup & { productTitles?: readonly string[] };
+
+/**
  * The grid over any deal, through its paths only: every cell is a dot path
  * (`notionalCcy`, `hedgeType`, `groups.<id>.products.<id>.data.optionsCommon.strike`),
  * read with `readPath`, written with `writePaths` (a paste: one call with
  * every path). What changed comes from the deal's own `subscribe`.
+ *
+ * A product cell looks its product up once and reads the product's data
+ * directly (the same value `readPath` would give, without resolving the
+ * product again for every field the cell depends on).
  */
 export const createPathGridSource = (deal: PathDeal): GridSource => {
   /** The dot path a cell reads and writes; `null` for a cell that has none. */
@@ -39,13 +50,14 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
 
   const getColumns = (): GridColumn[] => [
     { id: DEAL_COLUMN_ID, title: "Deal" },
-    ...deal.getGroups().flatMap((group) =>
-      group.productIds.map((productId) => ({
+    ...(deal.getGroups() as readonly TitledPathDealGroup[]).flatMap((group) => {
+      const groupRef = { id: group.id, title: group.title };
+      return group.productIds.map((productId, index) => ({
         id: productId,
-        title: deal.getProduct(productId)?.title ?? "",
-        group: { id: group.id, title: group.title },
-      })),
-    ),
+        title: group.productTitles?.[index] ?? deal.getProduct(productId)?.title ?? "",
+        group: groupRef,
+      }));
+    }),
   ];
 
   const getCell: GridSource["getCell"] = (columnId, key) => {
@@ -57,10 +69,11 @@ export const createPathGridSource = (deal: PathDeal): GridSource => {
     if (columnId === DEAL_COLUMN_ID) return dealCell(key, deal.readPath(key), options, deal.spotPriceStream);
     const product = deal.getProduct(columnId);
     if (!product) return null;
-    const definition = definitionOfData(product.data);
+    const { data } = product;
+    const definition = definitionOfData(data);
     return productCell(
       definition,
-      (dataPath) => deal.readPath(productPath(product.groupId, columnId, dataPath)),
+      (dataPath) => getValueByPath(data, dataPath),
       key,
       key in definition.fieldPaths && deal.fieldIssues(columnId, key as ProductFieldId).length > 0,
       options,

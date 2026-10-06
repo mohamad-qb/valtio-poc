@@ -1,7 +1,7 @@
 import type { DealFieldsState } from "../dealFields.ts";
 import type { DealSettingsState } from "../dealSettings.ts";
 import { setIn } from "../lib/path.ts";
-import type { PathWrite } from "../paths.ts";
+import { type PathWrite, parsePath } from "../paths.ts";
 import type { ProductData } from "../products/productRegistry.ts";
 
 /**
@@ -41,13 +41,28 @@ export const applyChangesToState = <State extends object>(
 const isSingleChange = (result: readonly ReducerChange[] | ReducerChange): result is ReducerChange =>
   typeof result[0] === "string";
 
-/** The user's writes, then every change the reducers add, in order. */
+/**
+ * Whether a write can land in the deal: a deal key, or a product the deal
+ * has. The deal ignores any other path (P4), so its reducers never see it:
+ * a ccy pair written to a missing product sets no Notional Ccy.
+ */
+const landsInDeal = (state: DealState, path: string) => {
+  const target = parsePath(path);
+  if (!target) return false;
+  if (target.kind === "deal") return true;
+  const group = Object.hasOwn(state.groups, target.groupId) ? state.groups[target.groupId] : undefined;
+  return Boolean(group && Object.hasOwn(group.products, target.productId));
+};
+
+/** The user's writes the deal can take, then every change the reducers add, in order. */
 export const runDealLogic = (
   prevState: DealState,
   writes: readonly PathWrite[],
   reducers: readonly DealReducer[],
 ): PathWrite[] => {
-  let changes: Change[] = writes.map(({ path, value }) => [path, value, { isUserChange: true }]);
+  let changes: Change[] = writes
+    .filter(({ path }) => landsInDeal(prevState, path))
+    .map(({ path, value }) => [path, value, { isUserChange: true }]);
   for (const reducer of reducers) {
     const result = reducer(prevState, changes);
     if (!result) continue;

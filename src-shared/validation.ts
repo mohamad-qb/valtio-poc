@@ -35,11 +35,20 @@ export const fieldIssues = (
     if (!result.success) issues.push(...result.error.issues);
   }
   for (const rule of definition.rules?.[fieldId] ?? []) {
-    if (!rule.isValid(data)) {
+    if (!holds(rule.isValid, data)) {
       issues.push({ code: "custom", path: [], message: rule.message, input: value });
     }
   }
   return issues.length ? issues : noIssues;
+};
+
+/** A rule over data that may be malformed (written by path): one that throws doesn't hold, and never crashes validation. */
+const holds = (isValid: (data: ProductData) => boolean, data: ProductData) => {
+  try {
+    return isValid(data);
+  } catch {
+    return false;
+  }
 };
 
 /** Every field's issues for one product (fields without issues are left out). */

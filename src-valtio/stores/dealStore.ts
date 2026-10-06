@@ -1,7 +1,5 @@
 import { proxy, ref, subscribe } from "valtio";
 import { subscribeKey } from "valtio/utils";
-import { effect } from "valtio-reactive";
-import type { $ZodIssue } from "zod/v4/core";
 import { calculatePrice } from "@shared/api/calculate.ts";
 import {
   type CalcState,
@@ -14,11 +12,12 @@ import {
   needsAutocalc,
 } from "@shared/calc.ts";
 import { type DealFieldsState, initialDealFields } from "@shared/dealFields.ts";
-import { type DealSettingsState, hedgeTypesFor, initialDealSettings } from "@shared/dealSettings.ts";
+import { type DealSettingsState, initialDealSettings } from "@shared/dealSettings.ts";
 import { type DealProduct, routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
 import { type GroupType, groupTitle } from "@shared/groups.ts";
 import { deleteValueByPath, setValueByPath } from "@shared/lib/path.ts";
+import type { Option } from "@shared/options/optionsSource.ts";
 import type { PathWrite } from "@shared/paths.ts";
 import type { ProductData } from "@shared/products/productRegistry.ts";
 import {
@@ -33,21 +32,18 @@ import { type SpotPriceStream, createSpotPriceStream } from "@shared/spotPriceSt
 import { type GroupStore, createGroupStore } from "./groupStore.ts";
 import { multiTabStore } from "./multiTabStore.ts";
 import { optionsStore } from "./optionsStore.ts";
-import { clearValidationErrors } from "./validation.ts";
+import { hasValidationErrors } from "./validation.ts";
 
 export type DealStore = DealFieldsState &
   DealSettingsState & {
     groups: Record<string, GroupStore>;
     groupIds: string[]; // display order; each group's `ui.index` mirrors it
-    options: {
-      hedgeTypes: readonly string[];
-    };
     spotPriceStream: SpotPriceStream;
+    /** Whether any product has issues: derived from the data (`validation.ts`), not state. */
     readonly hasValidationErrors: boolean;
     /** No validation errors and no request pending: ready to calculate. */
     readonly isReady: boolean;
     calc: CalcState;
-    validationErrors: Record<string, $ZodIssue[]>; // keyed by field path
     actions: {
       addNewGroup(groupType: GroupType): void;
       cloneGroup(groupId: string): void;
@@ -56,21 +52,20 @@ export type DealStore = DealFieldsState &
       writePaths(writes: readonly PathWrite[]): void;
       /** Calculates now, if ready (the manual Calculate). */
       calculate(): void;
+      /** Drops everything the deal subscribed to, and stops its stream. */
+      dispose(): void;
     };
   };
 
 /**
  * Deal factory. Every write is a batch of dot paths, routed by the shared
- * rules and applied as plain proxy assignments, leaf by leaf: valtio has no
- * transactions, so the deal's sync subscriptions (validation, inputs
- * changed) run as each one lands, while async ones (the grid, autocalc)
- * see the whole batch a tick later.
+ * rules and applied as plain proxy assignments, leaf by leaf; valtio has no
+ * transactions, but subscribers (the grid, autocalc) are notified a tick
+ * later, so they see the whole batch, and the price it outdated.
  */
 export const createDealStore = (): DealStore => {
   const spotPriceStream = createSpotPriceStream();
-
-  // kept outside the proxy: functions, never rendered or snapshotted
-  const disposers = new Map<string, () => void>();
+  const { devtools } = multiTabStore;
 
   /** Every product with where it lives, in display order. */
   const dealProducts = (): DealProduct[] =>
@@ -79,41 +74,51 @@ export const createDealStore = (): DealStore => {
       return group.productIds.map((productId) => ({ groupId, productId, data: group.products[productId].data }));
     });
 
-  /** Writes into a live product's data, leaf by leaf, by the shared rules. */
+  /** Writes into a live product's data, leaf by leaf, by the shared rules; whether anything changed. */
   const applyProductWrites = (data: ProductData, writes: readonly ProductWrite[]) => {
-    for (const change of planProductWrites(data, writes).changes) {
+    const { changes } = planProductWrites(data, writes);
+    for (const change of changes) {
       if ("remove" in change) deleteValueByPath(data, change.path);
       else setValueByPath(data, change.path, change.value);
     }
+    return changes.length > 0;
   };
 
-  /** Loads options; when they arrive, every product still on that parameter reconciles. */
-  const loadOptions = (requests: readonly OptionsRequest[]) => {
-    for (const request of requests) {
-      void optionsStore.actions.load(request.source, request.param).then((options) => {
-        if (!options) return;
-        for (const { data } of dealProducts()) applyProductWrites(data, reconcileWrites(data, request, options));
-      });
+  /** Any product change (an edit, a group added or removed) outdates the price and supersedes a calculation in flight: once per action. */
+  const inputsChanged = () => {
+    dealStore.calc = calcInputsChanged(dealStore.calc);
+  };
+
+  /** Options arrived (for any deal: the options store calls every deal): each product still on that parameter reconciles. */
+  const reconcileOptions = (request: OptionsRequest, options: readonly Option[]) => {
+    let changed = false;
+    for (const { data } of dealProducts()) {
+      if (applyProductWrites(data, reconcileWrites(data, request, options))) changed = true;
     }
+    if (changed) inputsChanged();
   };
 
-  /** Re-derives every group's index and title from its position. */
-  const reindexGroups = () => {
-    dealStore.groupIds.forEach((groupId, index) => {
-      const group = dealStore.groups[groupId];
+  const loadOptions = (requests: readonly OptionsRequest[]) => {
+    for (const { source, param } of requests) void optionsStore.actions.load(source, param);
+  };
+
+  /** Re-derives the index and title of every group from `from` on (the ones before it haven't moved). */
+  const reindexGroups = (from: number) => {
+    for (let index = from; index < dealStore.groupIds.length; index++) {
+      const group = dealStore.groups[dealStore.groupIds[index]];
       // same-value writes are ignored, so unmoved groups don't notify
       group.ui.index = index;
       group.ui.title = groupTitle(group.groupType, index);
-    });
+    }
   };
 
   const insertGroup = (groupType: GroupType, position: number, source?: GroupStore) => {
-    const { groupStore, dispose } = createGroupStore(dealStore, groupType, source);
-    disposers.set(groupStore.id, dispose);
+    const groupStore = createGroupStore(dealStore, groupType, source);
     // record first, so the id never appears in the order without its group
     dealStore.groups[groupStore.id] = groupStore;
     dealStore.groupIds.splice(position, 0, groupStore.id);
-    reindexGroups();
+    reindexGroups(position);
+    inputsChanged();
     const products = groupStore.productIds.map((productId) => groupStore.products[productId].data);
     loadOptions(uniqueRequests(products.flatMap(optionsRequestsOf)));
   };
@@ -124,17 +129,13 @@ export const createDealStore = (): DealStore => {
     groupIds: [],
     ...initialDealSettings,
     spotPriceStream: ref(spotPriceStream), // ref(): ticks never notify the deal proxy
-    options: {
-      hedgeTypes: [],
-    },
     get hasValidationErrors() {
-      return Object.values(dealStore.validationErrors).some((issues) => issues.length > 0);
+      return hasValidationErrors(dealStore);
     },
     get isReady() {
       return isCalcReady(dealStore.hasValidationErrors, optionsStore.pending);
     },
     calc: initialCalcState,
-    validationErrors: {},
     actions: {
       addNewGroup(groupType: GroupType) {
         insertGroup(groupType, dealStore.groupIds.length);
@@ -146,19 +147,15 @@ export const createDealStore = (): DealStore => {
         const source = dealStore.groups[groupId];
         insertGroup(source.groupType, position + 1, source);
       },
+      /** Nothing to dispose: the group's issues go with its data. */
       removeGroup(groupId: string) {
         const position = dealStore.groupIds.indexOf(groupId);
         if (position === -1) return;
-
-        disposers.get(groupId)?.();
-        disposers.delete(groupId);
-
         // order first, so the id never appears without its group
         dealStore.groupIds.splice(position, 1);
         delete dealStore.groups[groupId];
-        clearValidationErrors(dealStore, `groups.${groupId}`);
-
-        reindexGroups();
+        reindexGroups(position);
+        inputsChanged();
       },
       writePaths(writes: readonly PathWrite[]) {
         const { notionalCcy, premiumCcy, notionalAmount, isInternal, hedgeType } = dealStore;
@@ -172,9 +169,11 @@ export const createDealStore = (): DealStore => {
         );
         // same-value writes are ignored: only what changed notifies
         Object.assign(dealStore, routed.dealFields, routed.settings);
+        let changed = false;
         for (const [productId, { groupId, writes: productWrites }] of routed.products) {
-          applyProductWrites(dealStore.groups[groupId].products[productId].data, productWrites);
+          if (applyProductWrites(dealStore.groups[groupId].products[productId].data, productWrites)) changed = true;
         }
+        if (changed) inputsChanged();
         loadOptions(routed.requests);
       },
       calculate() {
@@ -186,39 +185,36 @@ export const createDealStore = (): DealStore => {
           () => (dealStore.calc = calcFailed(dealStore.calc, requestId)),
         );
       },
+      dispose() {
+        stops.forEach((stop) => stop());
+        spotPriceStream.stop();
+      },
     },
   });
 
-  effect(() => {
-    if (multiTabStore.devtools.isSpotPriceStreamEnabled) {
-      spotPriceStream.start();
-    } else {
-      spotPriceStream.stop();
-    }
-  });
+  const followSpotPriceStream = () => (devtools.isSpotPriceStreamEnabled ? spotPriceStream.start() : spotPriceStream.stop());
+  followSpotPriceStream();
 
-  // the deal column's own options (its default parameters), loaded with the deal
-  loadOptions(dealOptionsRequests);
-
-  // any product edit outdates the price (and supersedes a calculation in flight)
-  subscribe(dealStore.groups, () => (dealStore.calc = calcInputsChanged(dealStore.calc)), true);
   // autocalc: whenever the deal is ready and its price missing or outdated.
-  // Explicit subscriptions, not an `effect`: valtio-reactive only tracks
-  // proxies created after it loads, which the options and devtools stores
-  // may not be. Notified after the write has reached every listener, so an
-  // edit's validation has run by the time this checks.
+  // Notified a tick after a write, once the whole batch has landed; readiness
+  // is derived from the data, so it is never behind it
   const autocalc = () => {
-    if (multiTabStore.devtools.isAutocalcEnabled && dealStore.isReady && needsAutocalc(dealStore.calc)) {
+    if (devtools.isAutocalcEnabled && dealStore.isReady && needsAutocalc(dealStore.calc)) {
       dealStore.actions.calculate();
     }
   };
-  subscribeKey(dealStore, "calc", autocalc);
-  subscribe(dealStore.validationErrors, autocalc);
-  subscribeKey(optionsStore, "pending", autocalc);
-  subscribeKey(multiTabStore.devtools, "isAutocalcEnabled", autocalc);
 
-  const options = dealStore.options;
-  effect(() => (options.hedgeTypes = hedgeTypesFor(dealStore.isInternal)));
+  const stops = [
+    subscribeKey(devtools, "isSpotPriceStreamEnabled", followSpotPriceStream),
+    optionsStore.actions.onLoaded(reconcileOptions),
+    subscribeKey(dealStore, "calc", autocalc),
+    subscribe(dealStore.groups, autocalc),
+    subscribeKey(optionsStore, "pending", autocalc),
+    subscribeKey(devtools, "isAutocalcEnabled", autocalc),
+  ];
+
+  // the deal column's own options (its default parameters), loaded with the deal
+  loadOptions(dealOptionsRequests);
 
   return dealStore;
 };

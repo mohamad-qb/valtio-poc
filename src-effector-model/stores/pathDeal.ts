@@ -1,4 +1,7 @@
+import { readDealKey } from "@shared/dealWrites.ts";
+import { getValueByPath } from "@shared/lib/path.ts";
 import { type PathDeal, createChangeHub } from "@shared/pathDeal.ts";
+import { parsePath } from "@shared/paths.ts";
 import { noIssues } from "@shared/validation.ts";
 import type { DealStore, GroupItem, ProductItem } from "./dealStore.ts";
 import { $optionsByKey } from "./optionsStore.ts";
@@ -11,9 +14,9 @@ const productsById = (groups: readonly GroupItem[]) =>
   );
 
 /**
- * An `@effector/model` deal as a `PathDeal`. It already speaks paths
- * (`readPath`, `writePathsAction`); what changed comes from its collection:
- * each product is its own store, so a product that changed is a new item.
+ * An `@effector/model` deal as a `PathDeal`. Writes go to its
+ * `writePathsAction`; what changed comes from its collection: each product
+ * is its own store, so a product that changed is a new item.
  */
 export const createPathDeal = (deal: DealStore): PathDeal => {
   // product id → its item, rebuilt only when the groups change
@@ -37,7 +40,14 @@ export const createPathDeal = (deal: DealStore): PathDeal => {
         ? { groupId: found.groupId, title: found.product.ui.title, data: found.product.data }
         : undefined;
     },
-    readPath: deal.readPath,
+    readPath: (path) => {
+      const target = parsePath(path);
+      if (!target) return undefined;
+      if (target.kind === "deal") return readDealKey(target.key, deal.$dealFields.getState(), deal.$settings.getState());
+      const found = find(target.productId);
+      const data = found?.groupId === target.groupId ? found.product.data : null;
+      return data ? getValueByPath(data, target.dataPath) : undefined;
+    },
     writePaths: (writes) => deal.actions.writePathsAction(writes),
     fieldIssues: (productId, fieldId) => find(productId)?.product.issues[fieldId] ?? noIssues,
     getSettings: () => deal.$settings.getState(),

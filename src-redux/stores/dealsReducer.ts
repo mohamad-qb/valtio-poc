@@ -1,4 +1,4 @@
-import { type Draft, createReducer, current, isDraft } from "@reduxjs/toolkit";
+import { type Draft, createReducer, current, isDraft, original } from "@reduxjs/toolkit";
 import { calcFailed, calcInputsChanged, calcStarted, calcSucceeded } from "@shared/calc.ts";
 import type { ProductData } from "@shared/products/productRegistry.ts";
 import { type ProductWrite, planProductWrites, reconcileWrites } from "@shared/products/productWrites.ts";
@@ -13,6 +13,7 @@ import {
   pathsWritten,
   sourceOf,
 } from "./actions.ts";
+import { routedWrites } from "./selectors.ts";
 import { type DealState, type ProductState, initialDealState } from "./state.ts";
 
 /** The value as plain data: the shared rules work on plain objects, not drafts. */
@@ -38,7 +39,7 @@ const applyProductWrites = (product: Draft<ProductState>, writes: readonly Produ
 const sameValues = <T extends object>(a: T, b: T) =>
   (Object.keys(b) as (keyof T)[]).every((key) => Object.is(a[key], b[key]));
 
-/** Every deal, by id. Pure: ids, routing and options requests come in with the actions. */
+/** Every deal, by id. Pure: ids and options requests come in with the actions. */
 export const dealsReducer = createReducer({} as Record<string, DealState>, (builder) =>
   builder
     .addCase(dealAdded, (deals, { payload }) => {
@@ -58,21 +59,25 @@ export const dealsReducer = createReducer({} as Record<string, DealState>, (buil
       delete deal.groups[groupId];
       inputsChanged(deal);
     })
+    // routed here, from the deal it applies to: the action holds only the writes
     .addCase(pathsWritten, (deals, { payload }) => {
       const deal = deals[payload.dealId];
       if (!deal) return;
+      const routed = routedWrites(original(deal) as DealState, payload.writes);
       // replaced only when a value changed: unchanged parts keep their identity
-      if (!sameValues(deal.dealFields, payload.dealFields)) deal.dealFields = payload.dealFields;
-      if (!sameValues(deal.settings, payload.settings)) deal.settings = payload.settings;
+      if (!sameValues(deal.dealFields, routed.dealFields)) deal.dealFields = routed.dealFields;
+      if (!sameValues(deal.settings, routed.settings)) deal.settings = routed.settings;
       let changed = false;
-      for (const { groupId, productId, writes } of payload.products) {
+      for (const [productId, { groupId, writes }] of routed.products) {
         const product = deal.groups[groupId]?.products[productId];
         if (product && applyProductWrites(product, writes)) changed = true;
       }
       if (changed) inputsChanged(deal);
     })
     // options arrived: products still on that parameter keep their value if
-    // it's an option, else take the first (a product since moved on: no writes)
+    // it's an option, else take the first (a product since moved on: no
+    // writes). Every deal, not only the one that asked: a deal on that
+    // parameter would otherwise keep a value the server no longer offers.
     .addCase(optionsReceived, (deals, { payload: { sourceId, param, options } }) => {
       const request = { source: sourceOf(sourceId), param };
       for (const deal of Object.values(deals)) {

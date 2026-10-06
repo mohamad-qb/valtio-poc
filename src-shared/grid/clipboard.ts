@@ -1,14 +1,15 @@
 /**
  * Tab-separated text, as spreadsheets (Excel, Google Sheets) put on the
  * clipboard: a cell holding a tab, newline or quote is quoted, with quotes
- * doubled.
+ * doubled. Every row ends with a newline, like Excel's copy, so a last row
+ * that is a single empty cell survives the round trip.
  */
 
 const quote = (cell: string) =>
   /[\t\n\r"]/.test(cell) ? `"${cell.replaceAll('"', '""')}"` : cell;
 
 export const toTsv = (rows: readonly (readonly string[])[]) =>
-  rows.map((row) => row.map(quote).join("\t")).join("\n");
+  rows.map((row) => `${row.map(quote).join("\t")}\n`).join("");
 
 export const parseTsv = (text: string): string[][] => {
   const rows: string[][] = [];
@@ -36,7 +37,7 @@ export const parseTsv = (text: string): string[][] => {
   }
   row.push(cell);
   rows.push(row);
-  // spreadsheets end the copy with a newline: no empty last row
+  // a copy that ends with a newline (Excel's, ours) has no empty row after it
   const last = rows[rows.length - 1];
   if (rows.length > 1 && last.length === 1 && last[0] === "") rows.pop();
   return rows;

@@ -64,7 +64,7 @@ export type DealStore = {
     /** Calculates now, if ready (the manual Calculate). */
     calculate(): void;
   };
-  /** Unsubscribes the deal from the store and stops its stream. */
+  /** Unsubscribes the deal from the store and the options, and stops its stream. */
   dispose(): void;
 };
 
@@ -97,7 +97,7 @@ export const createDealStore = (devtoolsAtom: Atom<DealDevtools>): DealStore => 
     return changes.length > 0;
   };
 
-  /** Options arrived: every product still on that parameter reconciles. */
+  /** Options arrived (for any deal: the options store sets every deal's): each product still on that parameter reconciles. */
   const reconcileOptionsAtom = atom(null, (get, set, request: OptionsRequest, options: readonly Option[]) => {
     let changed = false;
     for (const { product, data } of dealProducts(get)) {
@@ -107,18 +107,13 @@ export const createDealStore = (devtoolsAtom: Atom<DealDevtools>): DealStore => 
   });
 
   /**
-   * Loads options; when they arrive, every product still on that parameter
-   * reconciles, in the batch that stores them and ends the load. `set` is
-   * the calling action's: the load is counted in that action's batch. So
-   * autocalc never sees the edit without its load, or the load done without
-   * the products it changes.
+   * Loads options; when they arrive, every deal's products reconcile in the
+   * batch that stores them and ends the load. `set` is the calling action's:
+   * the load is counted in that action's batch. So autocalc never sees the
+   * edit without its load, or the load done without the products it changes.
    */
   const loadOptions = (set: Setter, requests: readonly OptionsRequest[]) => {
-    for (const request of requests) {
-      void set(optionsStore.loadAtom, request.source, request.param, (set, options) =>
-        set(reconcileOptionsAtom, request, options),
-      );
-    }
+    for (const { source, param } of requests) void set(optionsStore.loadAtom, source, param);
   };
 
   /** Re-derives every group's index and title from its position. */
@@ -205,9 +200,14 @@ export const createDealStore = (devtoolsAtom: Atom<DealDevtools>): DealStore => 
     groupsAtom: atom<Record<string, GroupStore>>({}),
     groupIdsAtom: atom<string[]>([]),
     spotPriceStream, // outside jotai: ticks never set an atom
-    hasValidationErrorsAtom: atom((get) =>
-      dealProducts(get).some(({ product }) => Object.keys(get(product.issuesAtom)).length > 0),
-    ),
+    // the products' issues only: their data is read by the issues, not here
+    hasValidationErrorsAtom: atom((get) => {
+      const groups = get(dealStore.groupsAtom);
+      return get(dealStore.groupIdsAtom).some((groupId) => {
+        const { products, productIds } = groups[groupId];
+        return productIds.some((productId) => Object.keys(get(products[productId].issuesAtom)).length > 0);
+      });
+    }),
     isReadyAtom: atom((get) => isCalcReady(get(dealStore.hasValidationErrorsAtom), get(optionsStore.pendingAtom))),
     calcAtom: atom(initialCalcState),
     actions: {
@@ -245,6 +245,7 @@ export const createDealStore = (devtoolsAtom: Atom<DealDevtools>): DealStore => 
   };
 
   const stops = [
+    optionsStore.onLoaded(reconcileOptionsAtom),
     store.sub(devtoolsAtom, followSpotPriceStream),
     store.sub(dealStore.calcAtom, autocalc),
     store.sub(dealStore.isReadyAtom, autocalc),

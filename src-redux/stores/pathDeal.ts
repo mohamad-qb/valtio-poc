@@ -6,8 +6,13 @@ import { parsePath } from "@shared/paths.ts";
 import { noIssues } from "@shared/validation.ts";
 import { groupRemoved } from "./actions.ts";
 import { issuesOf } from "./selectors.ts";
+import type { DealState } from "./state.ts";
 import type { AppStore } from "./store.ts";
 import { addGroup, cloneGroup, spotStreamOf, writePaths } from "./thunks.ts";
+
+/** Each product's group, by product id. */
+const groupsByProduct = (deal: DealState) =>
+  new Map(deal.groupIds.flatMap((groupId) => deal.groups[groupId].productIds.map((id) => [id, groupId] as const)));
 
 /**
  * A Redux deal as a `PathDeal`. Its state already has the paths' shape
@@ -18,18 +23,19 @@ import { addGroup, cloneGroup, spotStreamOf, writePaths } from "./thunks.ts";
 export const createPathDeal = (store: AppStore, dealId: string): PathDeal => {
   const dealOf = () => store.getState().deals[dealId];
 
+  // product id → group id, rebuilt only when the groups change (a new `groupIds`)
+  let indexed: { groupIds: readonly string[]; groupOf: Map<string, string> } | null = null;
   const findProduct = (productId: string) => {
     const deal = dealOf();
-    for (const groupId of deal.groupIds) {
-      const product = deal.groups[groupId].products[productId];
-      if (product) return { groupId, product };
-    }
-    return undefined;
+    if (indexed?.groupIds !== deal.groupIds) indexed = { groupIds: deal.groupIds, groupOf: groupsByProduct(deal) };
+    const groupId = indexed.groupOf.get(productId);
+    const product = groupId === undefined ? undefined : deal.groups[groupId]?.products[productId];
+    return product && { groupId: groupId!, product };
   };
 
   const subscribeToDeal = createChangeHub((emit) => {
     let previous = store.getState();
-    return store.subscribe(() => {
+    const onStoreChange = () => {
       const state = store.getState();
       const before = previous.deals[dealId];
       const after = state.deals[dealId];
@@ -49,6 +55,14 @@ export const createPathDeal = (store: AppStore, dealId: string): PathDeal => {
       if (ids.length) emit({ kind: "products", ids });
       if (after.dealFields !== before.dealFields) emit({ kind: "dealFields" });
       if (after.settings !== before.settings) emit({ kind: "settings" });
+    };
+    return store.subscribe(() => {
+      // a listener that throws must not abort the dispatch: the listener middleware (autocalc) runs after it
+      try {
+        onStoreChange();
+      } catch (error) {
+        console.error(error);
+      }
     });
   });
 

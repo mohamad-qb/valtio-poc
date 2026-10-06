@@ -1,3 +1,5 @@
+import { hasUnsafeSegment } from "./lib/path.ts";
+
 /**
  * The deal's dot paths: the same addresses the app being migrated uses, so
  * its reads and writes carry over unchanged.
@@ -24,9 +26,13 @@ export type ParsedPath =
 export const productPath = (groupId: string, productId: string, dataPath: string) =>
   `${GROUPS}.${groupId}.${PRODUCTS}.${productId}.${DATA}.${dataPath}`;
 
-/** A path's target, or `null` for a path the deal doesn't have. */
+/**
+ * A path's target, or `null` for a path the deal doesn't have — including
+ * any path through `__proto__`, `constructor` or `prototype`.
+ */
 export const parsePath = (path: string): ParsedPath | null => {
   const parts = path.split(".");
+  if (hasUnsafeSegment(parts)) return null;
   if (parts[0] !== GROUPS) return parts.length === 1 && parts[0] ? { kind: "deal", key: parts[0] } : null;
   const [, groupId, products, productId, data, ...rest] = parts;
   if (products !== PRODUCTS || data !== DATA || !groupId || !productId || !rest.length) return null;

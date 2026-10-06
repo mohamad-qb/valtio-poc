@@ -3,9 +3,10 @@ import {
   asyncOptionFields,
   existsForParam,
   fieldExists,
+  fields,
   fieldsAbsentFor,
 } from "../fields.ts";
-import { getValueByPath, removeIn, setIn } from "../lib/path.ts";
+import { getValueByPath, hasUnsafeSegment, removeIn, setIn } from "../lib/path.ts";
 import {
   type Option,
   type OptionsSource,
@@ -43,52 +44,91 @@ export type LeafChange =
 /** One list of options: a source, for one parameter. */
 export type OptionsRequest = { source: OptionsSource; param: string };
 
+/** Where a product's type is kept: set when it is created, never written. */
+const PRODUCT_TYPE_PATH = "productType";
+
 export const definitionOfData = (data: ProductData) => definitionOf(productTypeOf(data));
 
-const fieldsByPath = new Map<GenericProductDefinition, Map<string, ProductFieldId>>();
-/** The field a path in a product's data belongs to, if it is a declared field. */
-export const fieldAtPath = (definition: GenericProductDefinition, path: string) => {
-  if (!fieldsByPath.has(definition)) {
-    const byPath = new Map<string, ProductFieldId>();
-    for (const [fieldId, fieldPath] of Object.entries(definition.fieldPaths)) {
-      byPath.set(fieldPath, fieldId as ProductFieldId);
-    }
-    fieldsByPath.set(definition, byPath);
+/** A definition's paths, indexed once: each field's path, and every object path that holds fields. */
+type DefinitionPaths = { fields: Map<string, ProductFieldId>; containers: Set<string> };
+
+const pathsByDefinition = new Map<GenericProductDefinition, DefinitionPaths>();
+const pathsOf = (definition: GenericProductDefinition): DefinitionPaths => {
+  const known = pathsByDefinition.get(definition);
+  if (known) return known;
+  const paths: DefinitionPaths = { fields: new Map(), containers: new Set() };
+  for (const [fieldId, fieldPath] of Object.entries(definition.fieldPaths)) {
+    paths.fields.set(fieldPath, fieldId as ProductFieldId);
+    const segments = fieldPath.split(".");
+    for (let i = 1; i < segments.length; i++) paths.containers.add(segments.slice(0, i).join("."));
   }
-  return fieldsByPath.get(definition)!.get(path);
+  pathsByDefinition.set(definition, paths);
+  return paths;
+};
+
+/** The field a path in a product's data belongs to, if it is a declared field. */
+export const fieldAtPath = (definition: GenericProductDefinition, path: string) => pathsOf(definition).fields.get(path);
+
+/** Whether a path in a product's data is an object that holds declared fields (`optionsCommon.base.notional`). */
+export const isFieldContainer = (definition: GenericProductDefinition, path: string) =>
+  pathsOf(definition).containers.has(path);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * A path write into a product's data, as the leaf writes it stands for:
+ * - a declared field, or any other path: itself (written as is);
+ * - an object that holds declared fields (a container): one write per key
+ *   of the value, so each field inside gets its own rules; a value that
+ *   isn't an object is no write at all;
+ * - `productType`, a path under a declared field (`…strike.length`), or a
+ *   path through a prototype key: no write.
+ * Routing (sync) and planning both expand writes with it.
+ */
+export const expandProductWrite = (
+  definition: GenericProductDefinition,
+  path: string,
+  value: unknown,
+): { path: string; value: unknown }[] => {
+  const { fields, containers } = pathsOf(definition);
+  if (fields.has(path)) return [{ path, value }];
+  const segments = path.split(".");
+  if (path === PRODUCT_TYPE_PATH || hasUnsafeSegment(segments)) return [];
+  for (let i = 1; i < segments.length; i++) {
+    if (fields.has(segments.slice(0, i).join("."))) return []; // under a leaf
+  }
+  if (!containers.has(path)) return [{ path, value }];
+  if (!isPlainObject(value)) return [];
+  return Object.keys(value).flatMap((key) => expandProductWrite(definition, `${path}.${key}`, value[key]));
 };
 
 const unchanged = (data: ProductData) => ({ data, changes: [] as LeafChange[] });
 
-/**
- * A write planned: the product's data after it (only the objects along the
- * changed paths are copied; nothing changed: the same object), and the leaf
- * changes that get there, in order.
- *
- * A path that is a declared field gets the field's rules: derived fields are
- * recomputed from what they depend on, and a write to one writes the field
- * it says (`write`) or nothing; a field the product doesn't have (a fixing
- * source without Cash) isn't written, and fields that stop existing are
- * removed. Any other path is written as is.
- */
-export const planProductWrite = (data: ProductData, write: ProductWrite): { data: ProductData; changes: LeafChange[] } => {
-  const definition = definitionOfData(data);
+/** One leaf (or undeclared) write planned onto `data`, its changes pushed onto `changes`. */
+const planLeafWrite = (
+  definition: GenericProductDefinition,
+  data: ProductData,
+  write: ProductWrite,
+  changes: LeafChange[],
+): ProductData => {
   const fieldId = "fieldId" in write ? write.fieldId : fieldAtPath(definition, write.path);
   if (!fieldId) {
     // only a path can miss a field: written as is
     const { path, value } = write as { path: string; value: unknown };
     const next = setIn(data, path, value);
-    return next === data ? unchanged(data) : { data: next, changes: [{ path, value }] };
+    if (next !== data) changes.push({ path, value });
+    return next;
   }
   const read = (id: ProductFieldId) => getValueByPath(data, definition.fieldPaths[id]);
-  if (isReadOnly(definition, fieldId) || !fieldExists(fieldId, read)) return unchanged(data);
+  if (isReadOnly(definition, fieldId) || !fieldExists(fieldId, read)) return data;
   // a writable derived field (Expiry Days): the field it derives from is written, and it follows
   const derived = definition.derived?.[fieldId];
-  if (derived?.write) return planProductWrite(data, derived.write(write.value));
+  if (derived?.write) return planLeafWrite(definition, data, derived.write(write.value), changes);
   const path = definition.fieldPaths[fieldId];
   let next = setIn(data, path, write.value);
-  if (next === data) return unchanged(data);
-  const changes: LeafChange[] = [{ path, value: write.value }];
+  if (next === data) return data;
+  changes.push({ path, value: write.value });
   for (const [derivedId, derived] of derivedFieldsOf(definition, fieldId)) {
     const value = derived.compute(next);
     next = setIn(next, definition.fieldPaths[derivedId], value);
@@ -100,18 +140,55 @@ export const planProductWrite = (data: ProductData, write: ProductWrite): { data
     next = removed;
     changes.push({ path: definition.fieldPaths[absentId], remove: true });
   }
-  return { data: next, changes };
+  return next;
 };
 
-/** Writes planned in order: the final data, and every leaf change on the way. */
-export const planProductWrites = (data: ProductData, writes: readonly ProductWrite[]) =>
-  writes.reduce(
-    (planned, write) => {
-      const next = planProductWrite(planned.data, write);
-      return { data: next.data, changes: [...planned.changes, ...next.changes] };
-    },
-    unchanged(data),
-  );
+/** A leaf as it stands in some data: whether it is there, and its value. */
+const leafAt = (data: object, path: string) => {
+  const segments = path.split(".");
+  const key = segments.pop() as string;
+  const parent = getValueByPath(data, segments);
+  const present = typeof parent === "object" && parent !== null && key in parent;
+  return { present, value: present ? (parent as Record<string, unknown>)[key] : undefined };
+};
+
+/** Whether every leaf the changes touched ends as it started: a batch that wrote and wrote back. */
+const endsAsItStarted = (before: ProductData, after: ProductData, changes: readonly LeafChange[]) =>
+  changes.every(({ path }) => {
+    const [was, is] = [leafAt(before, path), leafAt(after, path)];
+    return was.present === is.present && Object.is(was.value, is.value);
+  });
+
+/**
+ * Writes planned in order: the product's data after them (only the objects
+ * along the changed paths are copied; nothing changed: the same object), and
+ * the leaf changes that get there, in order. A batch whose writes end where
+ * the data started (a field written, then written back) changes nothing.
+ *
+ * A path that is a declared field gets the field's rules: derived fields are
+ * recomputed from what they depend on, and a write to one writes the field
+ * it says (`write`) or nothing; a field the product doesn't have (a fixing
+ * source without Cash) isn't written, and fields that stop existing are
+ * removed. An object written over declared fields is written field by field
+ * (`expandProductWrite`). Any other path is written as is.
+ */
+export const planProductWrites = (
+  data: ProductData,
+  writes: readonly ProductWrite[],
+): { data: ProductData; changes: LeafChange[] } => {
+  // writes never change a product's type, so its definition holds for the whole batch
+  const definition = definitionOfData(data);
+  const changes: LeafChange[] = [];
+  let next = data;
+  for (const write of writes) {
+    if ("fieldId" in write) next = planLeafWrite(definition, next, write, changes);
+    else for (const leaf of expandProductWrite(definition, write.path, write.value)) next = planLeafWrite(definition, next, leaf, changes);
+  }
+  return next === data || endsAsItStarted(data, next, changes) ? unchanged(data) : { data: next, changes };
+};
+
+/** One write planned (see `planProductWrites`). */
+export const planProductWrite = (data: ProductData, write: ProductWrite) => planProductWrites(data, [write]);
 
 // --- async options: each depends on another field of the same product
 
@@ -136,8 +213,9 @@ export const uniqueRequests = (requests: readonly OptionsRequest[]) => [
 
 /**
  * Options arrived: the writes that keep a product's fields valid — its value
- * if still an option, else the first. A product that has since moved to
- * another parameter gets none (a stale response).
+ * if still an option (or an option's label: a pasted label), else the first.
+ * A product that has since moved to another parameter gets none (a stale
+ * response).
  */
 export const reconcileWrites = (
   data: ProductData,
@@ -151,4 +229,20 @@ export const reconcileWrites = (
       ? [{ fieldId, value: reconcileOption(read(fieldId), options) }]
       : [],
   );
+};
+
+/**
+ * Product data back from JSON (a state from DevTools): an empty number field
+ * is NaN in the app but `null` in JSON. Puts NaN back at the number fields'
+ * paths only, so a `null` anywhere else stays as written. Data without such
+ * a `null` is returned as is.
+ */
+export const withNumbersRevived = (data: ProductData): ProductData => {
+  const definition = definitionOfData(data);
+  let revived = data;
+  for (const field of fields) {
+    const path = field.input === "number" ? (definition.fieldPaths as Record<string, string>)[field.id] : undefined;
+    if (path && getValueByPath(revived, path) === null) revived = setIn(revived, path, NaN);
+  }
+  return revived;
 };

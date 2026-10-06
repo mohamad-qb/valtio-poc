@@ -1,4 +1,4 @@
-import { isSyncedField } from "../dealFields.ts";
+import { isBroadcastField, isSyncedField } from "../dealFields.ts";
 import {
   type DealSettingId,
   type DealSettingsState,
@@ -127,19 +127,22 @@ export const productCell = (
 
 /**
  * A deal column cell. Synced fields show the deal's value; broadcasts hold
- * nothing (a write goes to every product); the spot price is read-only.
+ * nothing (a write goes to every product); the spot price is read-only. Any
+ * other field (Expiry Days) has no cell: a write there would go nowhere.
  */
 export const dealCell = (
   fieldId: FieldId,
   syncedValue: unknown,
   byKey: Readonly<Record<string, OptionsState>>,
   spotPriceStream: SpotPriceStream,
-): CellView => {
+): CellView | null => {
   if (fieldId === "spotStream") {
     return { value: spotPriceStream.getValue(), hasError: false, readOnly: true };
   }
+  const isSynced = isSyncedField(fieldId);
+  if (!isSynced && !isBroadcastField(fieldId)) return null;
   return {
-    value: isSyncedField(fieldId) ? syncedValue : undefined,
+    value: isSynced ? syncedValue : undefined,
     hasError: false,
     readOnly: false,
     options: cellOptions(fieldId, undefined, byKey),
@@ -169,25 +172,31 @@ export const settingCells: readonly CellRef[] = dealSettings.map(({ id }) => ({
  * of a product that changed); this narrows them to actual repaints.
  *
  * What the grid shows is recorded up front, and for a new column as the
- * columns change, when the grid draws it whole. Returns the notifier and
- * its unsubscribe.
+ * columns change, when the grid draws it whole. A column that goes away is
+ * forgotten (nothing is reported for it), so removed products leave nothing
+ * behind. Returns the notifier and its unsubscribe.
  */
 export const createCellNotifier = (
   source: Pick<GridSource, "getCell" | "getColumns" | "subscribeColumns">,
   onChange: (cells: readonly CellRef[]) => void,
 ) => {
   const keyOf = (cell: CellRef) => `${cell.columnId}:${cell.fieldId}`;
+  const keysOf = (columnId: string) => (columnId === SETTINGS_COLUMN_ID ? dealSettings : fields);
   const shown = new Map<string, CellView | null>();
   const knownColumns = new Set<string>();
   const pending = new Map<string, CellRef>();
 
-  const recordNewColumns = () => {
-    const columnIds = [SETTINGS_COLUMN_ID, ...source.getColumns().map(({ id }) => id)];
+  const recordColumns = () => {
+    const columnIds = new Set([SETTINGS_COLUMN_ID, ...source.getColumns().map(({ id }) => id)]);
+    for (const columnId of knownColumns) {
+      if (columnIds.has(columnId)) continue;
+      knownColumns.delete(columnId);
+      for (const { id: fieldId } of keysOf(columnId)) shown.delete(keyOf({ columnId, fieldId }));
+    }
     for (const columnId of columnIds) {
       if (knownColumns.has(columnId)) continue;
       knownColumns.add(columnId);
-      const keys = columnId === SETTINGS_COLUMN_ID ? dealSettings : fields;
-      for (const { id: fieldId } of keys) {
+      for (const { id: fieldId } of keysOf(columnId)) {
         shown.set(keyOf({ columnId, fieldId }), source.getCell(columnId, fieldId));
       }
     }
@@ -203,6 +212,7 @@ export const createCellNotifier = (
   const flush = () => {
     const changed: CellRef[] = [];
     for (const [key, cell] of pending) {
+      if (!knownColumns.has(cell.columnId)) continue; // gone, or not drawn yet: drawn whole when it comes
       const view = source.getCell(cell.columnId, cell.fieldId);
       if (isSame(shown.get(key), view)) continue;
       shown.set(key, view);
@@ -212,8 +222,8 @@ export const createCellNotifier = (
     if (changed.length) onChange(changed);
   };
 
-  recordNewColumns();
-  const stop = source.subscribeColumns(recordNewColumns);
+  recordColumns();
+  const stop = source.subscribeColumns(recordColumns);
   const notify = (cells: readonly CellRef[]) => {
     if (!pending.size) queueMicrotask(flush);
     for (const cell of cells) pending.set(keyOf(cell), cell);

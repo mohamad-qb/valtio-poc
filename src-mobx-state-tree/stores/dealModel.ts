@@ -1,5 +1,14 @@
-import { autorun, reaction } from "mobx";
-import { type Instance, type SnapshotIn, addDisposer, getEnv, getSnapshot, isAlive, types } from "mobx-state-tree";
+import { autorun } from "mobx";
+import {
+  type Instance,
+  type SnapshotIn,
+  addDisposer,
+  getEnv,
+  getParent,
+  isAlive,
+  resolveIdentifier,
+  types,
+} from "mobx-state-tree";
 import { calculatePrice } from "@shared/api/calculate.ts";
 import {
   type CalcState,
@@ -11,7 +20,7 @@ import {
   isCalcReady,
   needsAutocalc,
 } from "@shared/calc.ts";
-import { initialDealFields } from "@shared/dealFields.ts";
+import { asSyncedValue, initialDealFields, isSyncedField, syncedFieldIds } from "@shared/dealFields.ts";
 import { initialDealSettings } from "@shared/dealSettings.ts";
 import { routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
@@ -21,13 +30,15 @@ import type { Option } from "@shared/options/optionsSource.ts";
 import type { PathWrite } from "@shared/paths.ts";
 import {
   type OptionsRequest,
+  type ProductWrite,
   optionsRequestsOf,
   reconcileWrites,
   uniqueRequests,
 } from "@shared/products/productWrites.ts";
 import { createSpotPriceStream } from "@shared/spotPriceStream.ts";
 import { Group, copyOfGroup, newGroup } from "./groupModel.ts";
-import { optionsStore } from "./optionsStore.ts";
+import { onOptionsLoaded, optionsStore } from "./optionsStore.ts";
+import { Product } from "./productModel.ts";
 
 /** What a deal needs from the app-wide developer settings. */
 export type DealDevtools = {
@@ -38,17 +49,42 @@ export type DealDevtools = {
 /** The deal's environment, given to the tree that holds it: `Deal.create({}, { devtools })`. */
 export type DealEnv = { devtools: DealDevtools };
 
+let isRestoring = false;
+
+/**
+ * Applies a past state (DevTools time travel): it comes back as recorded, so
+ * autocalc leaves it alone (nothing outdated or re-priced by the jump itself).
+ */
+export const restoring = (restore: () => void) => {
+  isRestoring = true;
+  try {
+    restore();
+  } finally {
+    isRestoring = false;
+  }
+};
+
+/** A number that is NaN while empty: JSON (a state from DevTools) brings it back as `null`. */
+const emptyableNumber = types.snapshotProcessor(types.number, {
+  preProcessor: (snapshot: number | null) => (snapshot === null ? NaN : snapshot),
+});
+
+const withSyncedValues = (writes: readonly ProductWrite[]) =>
+  writes.map((write) =>
+    "fieldId" in write && isSyncedField(write.fieldId) ? { ...write, value: asSyncedValue(write.fieldId, write.value) } : write,
+  );
+
 /**
  * A deal. Every write is a batch of dot paths, routed by the shared rules
- * and applied in one action, so every reaction (autocalc, inputs changed,
- * the grid) runs once, after the last write.
+ * and applied in one action, so every reaction (autocalc, the grid) runs
+ * once, after the last write.
  */
 export const Deal = types
   .model("Deal", {
     id: types.optional(types.identifier, uuid),
     notionalCcy: initialDealFields.notionalCcy,
     premiumCcy: initialDealFields.premiumCcy,
-    notionalAmount: initialDealFields.notionalAmount,
+    notionalAmount: types.optional(emptyableNumber, initialDealFields.notionalAmount),
     isInternal: initialDealSettings.isInternal,
     hedgeType: initialDealSettings.hedgeType,
     /** In display order. */
@@ -64,20 +100,19 @@ export const Deal = types
     get products() {
       return self.groups.flatMap((group) => group.products.slice());
     },
+    /** Reads every product's flag (no early exit), so every product's issues stay observed: cached. */
     get hasValidationErrors() {
-      return this.products.some((product) => product.hasValidationErrors);
+      return this.products.filter((product) => product.hasValidationErrors).length > 0;
     },
     /** No validation errors and no request pending: ready to calculate. */
     get isReady() {
       return isCalcReady(this.hasValidationErrors, optionsStore.pending);
     },
-    /** A product and its group, by the product's id. */
+    /** A product and its group, by the product's id: MST's identifier index, not a scan. */
     findProduct(productId: string) {
-      for (const group of self.groups) {
-        const product = group.products.find(({ id }) => id === productId);
-        if (product) return { group, product };
-      }
-      return undefined;
+      const product = resolveIdentifier(Product, self, productId);
+      const group = product && getParent<Group>(product, 2);
+      return group && getParent(group, 2) === self ? { group, product: product! } : undefined;
     },
   }))
   // the steps that async results (a price, options) apply: MST only lets actions change the tree
@@ -85,26 +120,34 @@ export const Deal = types
     setCalc(calc: CalcState) {
       self.calc = calc;
     },
+    /**
+     * Any change to the products outdates the price (and supersedes a
+     * calculation in flight), in the action that made it: autocalc, which runs
+     * after the action, never sees the change without it.
+     */
     markInputsChanged() {
       self.calc = calcInputsChanged(self.calc);
     },
-    /** Options arrived: every product still on that parameter keeps a valid value, in one action. */
+  }))
+  .actions((self) => ({
+    /** Options arrived (whichever deal asked): every product still on that parameter keeps a valid value. */
     reconcileOptions(request: OptionsRequest, options: readonly Option[]) {
-      for (const product of self.products) product.write(reconcileWrites(product.data, request, options));
+      let changed = false;
+      for (const product of self.products) {
+        if (product.write(reconcileWrites(product.data, request, options))) changed = true;
+      }
+      if (changed) self.markInputsChanged();
     },
   }))
   .actions((self) => {
+    /** What arrives reconciles every deal (`reconcileOptions`), this one included. */
     const loadOptions = (requests: readonly OptionsRequest[]) => {
-      for (const request of requests) {
-        void optionsStore.load(request.source, request.param).then((options) => {
-          // a deal destroyed meanwhile (a closed tab) has nothing to reconcile
-          if (options && isAlive(self)) self.reconcileOptions(request, options);
-        });
-      }
+      for (const { source, param } of requests) void optionsStore.load(source, param);
     };
 
     const insertGroup = (group: SnapshotIn<typeof Group>, position: number) => {
       self.groups.splice(position, 0, group);
+      self.markInputsChanged();
       const { products } = self.groups[position];
       loadOptions(uniqueRequests(products.flatMap(({ data }) => optionsRequestsOf(data))));
     };
@@ -121,7 +164,9 @@ export const Deal = types
       },
       removeGroup(groupId: string) {
         const position = self.groups.findIndex(({ id }) => id === groupId);
-        if (position !== -1) self.groups.splice(position, 1);
+        if (position === -1) return;
+        self.groups.splice(position, 1);
+        self.markInputsChanged();
       },
       /** Writes values at dot paths, in order, as one action: an edit, a paste, anything. */
       writePaths(writes: readonly PathWrite[]) {
@@ -136,11 +181,20 @@ export const Deal = types
           },
           writes,
         );
-        // same-value writes don't notify: only what changed does
-        Object.assign(self, routed.dealFields, routed.settings);
-        for (const [productId, { writes: productWrites }] of routed.products) {
-          self.findProduct(productId)?.product.write(productWrites);
+        const current: Record<string, unknown> = { notionalCcy, premiumCcy, notionalAmount, isInternal, hedgeType };
+        const next = {
+          ...Object.fromEntries(syncedFieldIds.map((fieldId) => [fieldId, asSyncedValue(fieldId, routed.dealFields[fieldId])])),
+          ...routed.settings,
+        };
+        // only what changed is written (not NaN over NaN): only that notifies
+        for (const [key, value] of Object.entries(next)) {
+          if (!Object.is(current[key], value)) Object.assign(self, { [key]: value });
         }
+        let changed = false;
+        for (const [productId, { writes: productWrites }] of routed.products) {
+          if (self.findProduct(productId)?.product.write(withSyncedValues(productWrites))) changed = true;
+        }
+        if (changed) self.markInputsChanged();
         loadOptions(routed.requests);
       },
       /** Calculates now, if ready (the manual Calculate). Only the latest request's response is kept. */
@@ -148,28 +202,33 @@ export const Deal = types
         if (!self.isReady) return;
         const requestId = self.calc.requestId + 1;
         self.calc = calcStarted(self.calc, requestId);
+        // a deal destroyed meanwhile (a closed tab, a time-travel jump) has nothing to price
         calculatePrice(self.products.map((product) => product.data)).then(
-          (price) => self.setCalc(calcSucceeded(self.calc, requestId, price)),
-          () => self.setCalc(calcFailed(self.calc, requestId)),
+          (price) => {
+            if (isAlive(self)) self.setCalc(calcSucceeded(self.calc, requestId, price));
+          },
+          () => {
+            if (isAlive(self)) self.setCalc(calcFailed(self.calc, requestId));
+          },
         );
       },
     };
   })
-  // lifecycle: the deal's reactions live as long as the deal; `destroy(deal)` stops them
+  // lifecycle: what the deal subscribes to lives as long as the deal; `destroy(deal)` stops it
   .actions((self) => ({
     afterCreate() {
       const { devtools } = getEnv<DealEnv>(self);
+      // the lists are shared: whichever deal asked, this deal's products reconcile too
+      addDisposer(self, onOptionsLoaded((request, options) => self.reconcileOptions(request, options)));
       // the deal column's own options (its default parameters), loaded with the deal
       self.loadOptions(dealOptionsRequests);
-      // any product edit outdates the price (and supersedes a calculation in flight);
-      // the snapshot is a new object whenever anything in the groups changed
-      addDisposer(self, reaction(() => getSnapshot(self.groups), () => self.markInputsChanged()));
       // autocalc: whenever the deal is ready and its price missing or outdated. An autorun,
-      // not a reaction: a calculation can be superseded in the same batch that started it
+      // not a reaction: a calculation can be superseded in the same batch that started it.
+      // Readiness is read first, so validation stays observed (cached) whatever the switch.
       addDisposer(
         self,
         autorun(() => {
-          if (devtools.isAutocalcEnabled && self.isReady && needsAutocalc(self.calc)) self.calculate();
+          if (self.isReady && devtools.isAutocalcEnabled && needsAutocalc(self.calc) && !isRestoring) self.calculate();
         }),
       );
       addDisposer(

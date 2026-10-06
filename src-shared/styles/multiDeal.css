@@ -1,5 +1,7 @@
+/* many tabs wrap onto more rows instead of widening the page */
 .multi-deal__tabs {
   display: flex;
+  flex-wrap: wrap;
 }
 
 .multi-deal__tabs .button {

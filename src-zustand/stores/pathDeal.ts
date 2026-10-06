@@ -17,13 +17,22 @@ import { issuesOf } from "./validation.ts";
  * follow from it, `issuesOf`).
  */
 export const createPathDeal = (dealStore: DealStore): PathDeal => {
+  // product id → group id, rebuilt when the group order changes (a group's products never do)
+  const groupOf = new Map<string, string>();
+  let indexed: readonly string[] | undefined;
   const findProduct = (productId: string) => {
     const { groupIds, groups } = dealStore.getState();
-    for (const groupId of groupIds) {
-      const product = groups[groupId]?.products[productId];
-      if (product) return { groupId, product };
+    if (groupIds !== indexed) {
+      indexed = groupIds;
+      groupOf.clear();
+      for (const groupId of groupIds) {
+        for (const id of groups[groupId].productIds) groupOf.set(id, groupId);
+      }
     }
-    return undefined;
+    const groupId = groupOf.get(productId);
+    if (groupId === undefined) return undefined;
+    const product = groups[groupId]?.products[productId];
+    return product && { groupId, product };
   };
 
   const subscribeToDeal = createChangeHub((emit) => {

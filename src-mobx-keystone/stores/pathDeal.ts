@@ -30,7 +30,7 @@ export const createPathDeal = (deal: Deal): PathDeal => ({
   writePaths: (writes) => deal.writePaths(writes),
   fieldIssues: (productId, fieldId) => deal.findProduct(productId)?.product.issues[fieldId] ?? noIssues,
   getSettings: () => ({ isInternal: deal.isInternal, hedgeType: deal.hedgeType }),
-  getOptions: () => optionsStore.byKey,
+  getOptions: () => optionsStore.byKey.data,
   subscribe: createChangeHub((emit) => {
     const stops = [
       // groups added, removed or renumbered
@@ -57,8 +57,9 @@ export const createPathDeal = (deal: Deal): PathDeal => ({
         () => emit({ kind: "settings" }),
         { equals: compareStructural },
       ),
+      // a new (frozen) value whenever any options state changed
       reaction(
-        () => getSnapshot(optionsStore.byKey),
+        () => optionsStore.byKey,
         () => emit({ kind: "options" }),
       ),
     ];

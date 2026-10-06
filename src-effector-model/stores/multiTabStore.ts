@@ -3,11 +3,17 @@ import {
   createEvent,
   createStore,
   sample as connect,
+  withFactory,
 } from "effector";
-import { persist } from "effector-storage/local";
+import { type Fail, persist } from "effector-storage/local";
 import { z } from "zod";
 import { uuid } from "@shared/lib/uuid.ts";
 import { type DealStore, createDealStore } from "./dealStore.ts";
+
+// effector exports it (its babel plugin calls it for factories), but doesn't type it
+declare module "effector" {
+  export function withFactory<T>(config: { sid: string; fn: () => T }): T;
+}
 
 // --- developer settings, persisted to localStorage
 export const toggleSpotPriceStreamEnabledAction = createEvent();
@@ -22,34 +28,49 @@ export const $isAutocalcEnabled = createStore(true).on(
   (enabled) => !enabled,
 );
 
+/** A stored value that isn't readable or isn't a boolean: ignored (the default applies), without logging it. */
+const storedSettingRejected = createEvent<Fail<Error>>();
+
 /**
- * Restores the settings on load and saves every change (also kept in sync
- * across browser tabs). A stored value that isn't a boolean is ignored, so
- * the default applies.
+ * Restores the settings on load and saves every change. Each setting is
+ * stored on its own, so a bad value resets only its own. Not synced across
+ * browser tabs (`sync: false`): only Effector Nested does that (D3).
  */
 persist({
   store: $isSpotPriceStreamEnabled,
   keyPrefix: "effector-model-devtools:",
   key: "isSpotPriceStreamEnabled",
   contract: z.boolean(),
+  sync: false,
+  fail: storedSettingRejected,
 });
 persist({
   store: $isAutocalcEnabled,
   keyPrefix: "effector-model-devtools:",
   key: "isAutocalcEnabled",
   contract: z.boolean(),
+  sync: false,
+  fail: storedSettingRejected,
 });
 
 // --- deals (tabs)
 /**
  * A deal is a set of units (its model), created at runtime — a side effect,
- * so it happens in an effect.
+ * so it happens in an effect. Its units' sids are prefixed with its id, so
+ * deals don't share them in a scope. A new tab's deal comes with its first
+ * group, and loads its options in the caller's scope.
  */
-const addNewDealEffect = createEffect(() => ({
-  dealId: uuid(),
+const addNewDealEffect = createEffect(() => {
+  const dealId = uuid();
   // the deal gets only the settings it reads
-  deal: createDealStore({ $isSpotPriceStreamEnabled, $isAutocalcEnabled }),
-}));
+  const deal = withFactory({
+    sid: dealId,
+    fn: () => createDealStore({ $isSpotPriceStreamEnabled, $isAutocalcEnabled }),
+  });
+  deal.actions.loadDealOptionsAction();
+  deal.actions.addGroupAction("VanillaGroup");
+  return { dealId, deal };
+});
 
 export const addNewDealAction = createEvent();
 export const setActiveDealAction = createEvent<string>();

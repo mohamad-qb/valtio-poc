@@ -1,9 +1,8 @@
-import { useSnapshot } from "valtio";
 import { CalcBar } from "@shared/components/CalcBar.tsx";
 import { isCalcReady } from "@shared/calc.ts";
 import { optionsStore } from "../../stores/optionsStore.ts";
 import { useDealStore } from "../providers/DealStoreProvider.tsx";
-import { useProxyValue } from "../../hooks/useProxyValue.ts";
+import { useProxyDerived, useProxyValue } from "../../hooks/useProxyValue.ts";
 import { multiTabStore } from "../../stores/multiTabStore.ts";
 import { memo, useCallback } from "react";
 import {
@@ -23,13 +22,10 @@ export const DealHeader = memo(() => {
 
   const isAutocalcEnabled = useProxyValue(multiTabStore.devtools, "isAutocalcEnabled");
   const calc = useProxyValue(dealStore, "calc");
-  // validationErrors only changes when some field's issues do
-  const validationErrors = useSnapshot(dealStore.validationErrors);
+  // derived from the products' data: re-checked as it changes, re-rendered only when it flips
+  const hasValidationErrors = useProxyDerived(dealStore.groups, () => dealStore.hasValidationErrors);
   const pending = useProxyValue(optionsStore, "pending");
-  const isReady = isCalcReady(
-    Object.values(validationErrors).some((issues) => issues.length > 0),
-    pending,
-  );
+  const isReady = isCalcReady(hasValidationErrors, pending);
 
   const handleAddNewGroup = useCallback(
     (groupType: GroupType) => {

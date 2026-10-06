@@ -1,5 +1,6 @@
 import { Model, model, modelAction, onSnapshot, prop, registerRootStore } from "mobx-keystone";
 import { Deal, devtoolsContext } from "./dealModel.ts";
+import { optionsStore } from "./optionsStore.ts";
 
 const DEVTOOLS_STORAGE_KEY = "mobx-keystone-devtools";
 
@@ -18,18 +19,34 @@ class Devtools extends Model({
   }
 }
 
-const loadDevtools = (): { isSpotPriceStreamEnabled?: boolean; isAutocalcEnabled?: boolean } => {
+type Switches = { isSpotPriceStreamEnabled: boolean; isAutocalcEnabled: boolean };
+
+/** The stored switches, key by key: one missing, unreadable or not a boolean keeps its default. */
+const loadSwitches = (): Partial<Switches> => {
+  let stored: Partial<Record<keyof Switches, unknown>> = {};
   try {
-    return JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    if (typeof parsed === "object" && parsed !== null) stored = parsed;
   } catch {
-    return {};
+    // unreadable (not JSON, or no storage): the defaults
   }
+  const switches: Partial<Switches> = {};
+  for (const key of ["isSpotPriceStreamEnabled", "isAutocalcEnabled"] as const) {
+    const value = stored[key];
+    if (typeof value === "boolean") switches[key] = value;
+  }
+  return switches;
 };
 
-/** The open deals, one per tab, and the developer settings every deal reads. */
+/**
+ * The open deals, one per tab, the developer settings every deal reads, and
+ * the options every deal shares: one tree, so DevTools show one history,
+ * every action under its own path in it.
+ */
 @model("dealEditor/MultiTab")
 class MultiTab extends Model({
-  devtools: prop(() => new Devtools(loadDevtools())),
+  devtools: prop(() => new Devtools(loadSwitches())),
+  options: prop(() => optionsStore),
   deals: prop<Deal[]>(() => []),
   activeDealId: prop(""),
 }) {
@@ -37,9 +54,11 @@ class MultiTab extends Model({
     devtoolsContext.set(this, this.devtools);
   }
 
+  /** A new deal, with its first group, in a new tab. */
   @modelAction addNewDeal() {
     const deal = new Deal({});
     this.deals.push(deal);
+    deal.addNewGroup("VanillaGroup");
     this.activeDealId = deal.id;
   }
 

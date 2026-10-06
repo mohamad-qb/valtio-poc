@@ -1,5 +1,4 @@
 import { calculatePrice } from "@shared/api/calculate.ts";
-import { routeWrites } from "@shared/dealWrites.ts";
 import { dealOptionsRequests } from "@shared/fields.ts";
 import { type GroupType, groupDefinitions, productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
@@ -20,48 +19,74 @@ import {
   sourceOf,
   toKeyRequests,
 } from "./actions.ts";
-import { productsOf, selectIsReady } from "./selectors.ts";
+import { productsOf, routedWrites, selectIsReady } from "./selectors.ts";
 import type { GroupState } from "./state.ts";
-import type { AppDispatch, AppThunk } from "./store.ts";
+import type { AppDispatch, AppThunk, ThunkExtra } from "./store.ts";
 
 /**
  * What can't be in a reducer: new ids, requests, and reading the state to
  * build an event. Each thunk dispatches plain actions; reducers do the rest.
  */
 
-/** Loads options (already counted pending by the action that asked for them). */
-const fetchOptions = (dispatch: AppDispatch, requests: readonly OptionsKeyRequest[]) => {
+/**
+ * Starts loading options, counted in flight from now until each settles;
+ * the count to dispatch with the action that asks for them.
+ */
+const startLoads = (dispatch: AppDispatch, { loads }: ThunkExtra, requests: readonly OptionsKeyRequest[]) => {
+  loads.pending += requests.length;
   for (const request of requests) {
     sourceOf(request.sourceId)
       .load(request.param)
       .then(
-        (options) => dispatch(optionsReceived({ ...request, options })),
-        () => dispatch(optionsRequestFailed(request)),
+        (options) => {
+          loads.pending -= 1;
+          dispatch(optionsReceived({ ...request, options, pending: loads.pending }));
+        },
+        () => {
+          loads.pending -= 1;
+          dispatch(optionsRequestFailed({ ...request, pending: loads.pending }));
+        },
       );
   }
+  return loads.pending;
 };
 
-/** A new deal, with its spot price stream; its id. */
-export const addDeal = (): AppThunk<string> => (dispatch, _getState, { spotStreams }) => {
+/** A new deal, without groups (a new tab adds its first: `addNewDeal`); its id. */
+export const addDeal = (): AppThunk<string> => (dispatch, _getState, extra) => {
   const dealId = uuid();
-  spotStreams.set(dealId, createSpotPriceStream());
   // the deal column's own options (its default parameters), loaded with the deal
   const requests = toKeyRequests(dealOptionsRequests);
-  dispatch(dealAdded({ dealId, requests }));
-  fetchOptions(dispatch, requests);
+  dispatch(dealAdded({ dealId, requests, pending: startLoads(dispatch, extra, requests) }));
   return dealId;
 };
 
-/** A deal's spot price stream: kept outside the store, ticks never dispatch. */
+/** A new tab's deal: created with its first group; its id. */
+export const addNewDeal = (): AppThunk<string> => (dispatch) => {
+  const dealId = dispatch(addDeal());
+  dispatch(addGroup(dealId, "VanillaGroup"));
+  return dealId;
+};
+
+/**
+ * A deal's spot price stream, kept outside the store (ticks never dispatch).
+ * Made on first use, so a deal the DevTools restore has one too.
+ */
 export const spotStreamOf =
   (dealId: string): AppThunk<SpotPriceStream> =>
-  (_dispatch, _getState, { spotStreams }) =>
-    spotStreams.get(dealId)!;
+  (_dispatch, getState, { spotStreams }) => {
+    let stream = spotStreams.get(dealId);
+    if (!stream) {
+      stream = createSpotPriceStream();
+      spotStreams.set(dealId, stream);
+      if (getState().devtools.isSpotPriceStreamEnabled) stream.start();
+    }
+    return stream;
+  };
 
 /** `source`: a group to clone. Its products' data is shared, not copied: it is immutable. */
 const insertGroup =
   (dealId: string, groupType: GroupType, position: number, source?: GroupState): AppThunk =>
-  (dispatch, getState) => {
+  (dispatch, getState, extra) => {
     const deal = getState().deals[dealId];
     if (!deal) return;
     const group: GroupState = { id: uuid(), groupType, productIds: [], products: {} };
@@ -76,8 +101,7 @@ const insertGroup =
     const requests = toKeyRequests(
       uniqueRequests(group.productIds.flatMap((id) => optionsRequestsOf(group.products[id].data))),
     );
-    dispatch(groupInserted({ dealId, position, group, requests }));
-    fetchOptions(dispatch, requests);
+    dispatch(groupInserted({ dealId, position, group, requests, pending: startLoads(dispatch, extra, requests) }));
   };
 
 export const addGroup =
@@ -98,26 +122,12 @@ export const cloneGroup =
 /** Writes values at dot paths, in order, as one action: an edit, a paste, anything. */
 export const writePaths =
   (dealId: string, writes: readonly PathWrite[]): AppThunk =>
-  (dispatch, getState) => {
+  (dispatch, getState, extra) => {
     const deal = getState().deals[dealId];
     if (!deal) return;
-    // the deal logic and routing read the state: decided here, applied by the reducers
-    const routed = routeWrites(
-      { dealFields: deal.dealFields, settings: deal.settings, products: productsOf(deal) },
-      writes,
-    );
-    const requests = toKeyRequests(routed.requests);
-    dispatch(
-      pathsWritten({
-        dealId,
-        writes,
-        dealFields: routed.dealFields,
-        settings: routed.settings,
-        products: [...routed.products].map(([productId, { groupId, writes }]) => ({ groupId, productId, writes })),
-        requests,
-      }),
-    );
-    fetchOptions(dispatch, requests);
+    // routed here only for the options it reloads: the reducer applies the writes
+    const requests = toKeyRequests(routedWrites(deal, writes).requests);
+    dispatch(pathsWritten({ dealId, writes, requests, pending: startLoads(dispatch, extra, requests) }));
   };
 
 /** Calculates now, if ready (the manual Calculate, and autocalc). */

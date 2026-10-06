@@ -75,11 +75,11 @@ for (const app of apps) {
       await (await cell(page, "Settlement Style", 1)).click();
       await page.keyboard.press("Shift+ArrowRight");
       await page.keyboard.press("Shift+ArrowDown");
-      expect(await copy(page)).toBe("Delivery\tDelivery\n\t");
+      expect(await copy(page)).toBe("Delivery\tDelivery\n\t\n"); // every row ends with a newline, like Excel's
       await (await cell(page, "Strike", 1)).click();
       await page.keyboard.press("Shift+ArrowRight");
       await page.keyboard.press("Shift+ArrowDown");
-      expect(await copy(page)).toBe("1\t2\nCall\tPut");
+      expect(await copy(page)).toBe("1\t2\nCall\tPut\n");
     });
 
     test("pastes a block, fills a selection, and skips what doesn't fit", async ({ page }) => {
@@ -175,7 +175,7 @@ for (const app of apps) {
       // copy and paste work across the subgrid too
       await hedgeType.click();
       await page.keyboard.press("Shift+ArrowDown");
-      expect(await copy(page)).toBe("a\nYes");
+      expect(await copy(page)).toBe("a\nYes\n");
       await hedgeType.click();
       await paste(page, "c");
       await expect(hedgeType).toHaveText("c");

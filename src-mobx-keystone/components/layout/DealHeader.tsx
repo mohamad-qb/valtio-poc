@@ -11,7 +11,7 @@ export const DealHeader = observer(() => {
   return (
     <>
     <CalcBar
-      calc={deal.calc}
+      calc={deal.calc.data}
       isReady={deal.isReady}
       isAutocalcEnabled={devtools.isAutocalcEnabled}
       onToggleAutocalc={() => devtools.toggleAutocalcEnabled()}

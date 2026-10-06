@@ -1,5 +1,5 @@
-import type { Editor, EditorArguments, EditorConstructor } from "slickgrid";
-import { parseNumber } from "./cellValues.ts";
+import type { Editor, EditorArguments, EditorConstructor, EditorValidationResult } from "slickgrid";
+import { parseNumberText } from "./cellValues.ts";
 import { type CellKey, type GridSource, inputTypeOf, labelOf } from "./gridSource.ts";
 
 const toInputValue = (value: unknown) =>
@@ -10,7 +10,9 @@ const toInputValue = (value: unknown) =>
 /**
  * The grid's one editor, for every field: a text, number or date input, or
  * a dropdown over the cell's options. It never writes the value itself: the
- * grid hands every commit to the source (`editCommandHandler`).
+ * grid hands every commit to the source (`editCommandHandler`). A number
+ * input only commits a number (or nothing, which clears the cell): other
+ * text fails `validate`, and the editor stays open with it.
  */
 export const createFieldEditor = (source: GridSource): EditorConstructor =>
   class FieldEditor implements Editor {
@@ -76,7 +78,7 @@ export const createFieldEditor = (source: GridSource): EditorConstructor =>
 
     serializeValue() {
       return inputTypeOf(this.fieldId) === "number"
-        ? parseNumber(this.control.value)
+        ? (parseNumberText(this.control.value) ?? NaN)
         : this.control.value;
     }
 
@@ -88,7 +90,11 @@ export const createFieldEditor = (source: GridSource): EditorConstructor =>
       return this.control.value !== this.initial;
     }
 
-    validate() {
-      return { valid: true, msg: null };
+    validate(): EditorValidationResult {
+      const isNumber = inputTypeOf(this.fieldId) !== "number" || parseNumberText(this.control.value) !== null;
+      this.control.setAttribute("aria-invalid", String(!isNumber));
+      return isNumber
+        ? { valid: true, msg: null }
+        : { valid: false, msg: `${labelOf(this.fieldId)}: "${this.control.value.trim()}" is not a number` };
     }
   };

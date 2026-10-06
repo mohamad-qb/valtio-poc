@@ -69,14 +69,16 @@ export const optionsFailed = (previous: OptionsState | undefined): OptionsState 
 
 /**
  * The value to keep once options arrive: the current one if it is still an
- * option, otherwise the first option (`""` if there are none).
+ * option; else the option it is the label of (a pasted label: the clipboard
+ * carries labels); otherwise the first option (`""` if there are none).
  */
 export const reconcileOption = (
   current: unknown,
   options: readonly Option[],
 ): string => {
   const value = current === undefined || current === null ? "" : String(current);
-  return options.some((option) => option.value === value)
-    ? value
-    : (options[0]?.value ?? "");
+  const match =
+    options.find((option) => option.value === value) ??
+    options.find((option) => option.label === value);
+  return match ? match.value : (options[0]?.value ?? "");
 };

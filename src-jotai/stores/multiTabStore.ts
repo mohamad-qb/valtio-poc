@@ -1,5 +1,5 @@
 import { type PrimitiveAtom, atom, getDefaultStore } from "jotai/vanilla";
-import { atomWithStorage, createJSONStorage } from "jotai/vanilla/utils";
+import { atomWithStorage } from "jotai/vanilla/utils";
 import { type DealStore, createDealStore } from "./dealStore.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 
@@ -10,9 +10,41 @@ export type DevToolsStore = {
   isAutocalcEnabled: boolean;
 };
 
-// localStorage, as JSON, minus `subscribe`: with it, the switches would follow
-// other browser tabs, which only the Effector Nested app does
-const { subscribe: _otherTabs, ...devtoolsStorage } = createJSONStorage<DevToolsStore>();
+/**
+ * localStorage, as JSON, read key by key: one that isn't stored as a boolean
+ * (nothing stored, not JSON, `null`, another type) keeps its default. No
+ * `subscribe`: with it, the switches would follow other browser tabs, which
+ * only the Effector Nested app does.
+ */
+const devtoolsStorage = {
+  getItem: (key: string, defaults: DevToolsStore): DevToolsStore => {
+    let stored: Partial<Record<keyof DevToolsStore, unknown>> | null = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(key) ?? "null");
+    } catch {
+      // unreadable, or no storage: the defaults
+    }
+    const read = (name: keyof DevToolsStore) => {
+      const value = stored?.[name];
+      return typeof value === "boolean" ? value : defaults[name];
+    };
+    return { isSpotPriceStreamEnabled: read("isSpotPriceStreamEnabled"), isAutocalcEnabled: read("isAutocalcEnabled") };
+  },
+  setItem: (key: string, value: DevToolsStore) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // storage unavailable (private mode): keep the in-memory value
+    }
+  },
+  removeItem: (key: string) => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // storage unavailable: nothing stored
+    }
+  },
+};
 
 // persisted by jotai itself: read at once, saved on every change
 const devtoolsAtom = atomWithStorage<DevToolsStore>(
@@ -36,8 +68,10 @@ export type MultiTabStore = {
 
 const addNewDealAtom = atom(null, (_get, set) => {
   const newDealId = uuid();
-  // before anything is set: a new deal subscribes and starts loading, each flushing the store
+  // before anything is set: a new deal subscribes, starts loading and adds its group, each flushing the store
   const dealStore = createDealStore(devtoolsAtom);
+  // a deal starts with a group: made with it, not when its tab first shows
+  dealStore.actions.addNewGroup("VanillaGroup");
   set(multiTabStore.dealsAtom, (deals) => ({ ...deals, [newDealId]: dealStore }));
   set(multiTabStore.activeDealIdAtom, newDealId);
 });

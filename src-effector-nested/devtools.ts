@@ -38,6 +38,9 @@ if ("__REDUX_DEVTOOLS_EXTENSION__" in window) {
     name: "Deal editor (Effector, nested)",
     trace: true,
     stateTab: true,
+    // logs are queued for 500 ms and the oldest dropped past `size` (100 by
+    // default): a paste logs hundreds, so keep enough for one whole
+    batch: { size: 2000 },
     devToolsConfig: { serialize: { replacer } },
   });
 } else {

@@ -144,7 +144,7 @@ const valtio = async (): Promise<DealAdapter> => {
     calc: () => ({ status: deal.calc.status, price: deal.calc.price }),
     calculate: () => deal.actions.calculate(),
     setAutocalc: (enabled) => (multiTabStore.devtools.isAutocalcEnabled = enabled),
-    dispose: () => {},
+    dispose: () => deal.actions.dispose(),
   });
 };
 
@@ -197,7 +197,7 @@ const mobxKeystone = async (): Promise<DealAdapter> => {
   registerRootStore(deal); // starts the deal's reactions
   return pathAdapter(createPathDeal(deal), {
     hasValidationErrors: () => deal.hasValidationErrors,
-    calc: () => ({ status: deal.calc.status, price: deal.calc.price }),
+    calc: () => ({ status: deal.calc.data.status, price: deal.calc.data.price }),
     calculate: () => deal.calculate(),
     setAutocalc: (enabled) => runInAction(() => (devtools.isAutocalcEnabled = enabled)),
     dispose: () => unregisterRootStore(deal),
@@ -257,7 +257,7 @@ const zustand = async (): Promise<DealAdapter> => {
     },
     calculate: () => deal.getState().actions.calculate(),
     setAutocalc: (enabled) => devtools.setState({ isAutocalcEnabled: enabled }),
-    dispose: () => {},
+    dispose: () => deal.getState().actions.dispose(),
   });
 };
 
@@ -288,6 +288,7 @@ const effectorNested = async (): Promise<DealAdapter> => {
   const setAutocalc = createEvent<boolean>();
   const $isAutocalcEnabled = createStore(false).on(setAutocalc, (_, enabled) => enabled);
   const deal = createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled });
+  deal.actions.loadDealOptionsAction(); // as its tab does
   return pathAdapter(createPathDeal(deal), {
     hasValidationErrors: () => deal.$hasValidationErrors.getState(),
     calc: () => ({ status: deal.$calc.getState().status, price: deal.$calc.getState().price }),
@@ -304,6 +305,7 @@ const effectorModel = async (): Promise<DealAdapter> => {
   const setAutocalc = createEvent<boolean>();
   const $isAutocalcEnabled = createStore(false).on(setAutocalc, (_, enabled) => enabled);
   const deal = createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled });
+  deal.actions.loadDealOptionsAction(); // as its tab does
   return pathAdapter(createPathDeal(deal), {
     hasValidationErrors: () => deal.$hasValidationErrors.getState(),
     calc: () => ({ status: deal.$calc.getState().status, price: deal.$calc.getState().price }),

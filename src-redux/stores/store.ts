@@ -14,8 +14,11 @@ import { selectShouldAutocalc } from "./selectors.ts";
 import { tabsReducer } from "./tabsSlice.ts";
 import { calculate } from "./thunks.ts";
 
-/** What thunks get besides the state: what isn't data. */
-export type ThunkExtra = { spotStreams: Map<string, SpotPriceStream> };
+/**
+ * What thunks get besides the state: what isn't data. `loads.pending`: the
+ * options loads in flight, which a state restored by the DevTools can't know.
+ */
+export type ThunkExtra = { spotStreams: Map<string, SpotPriceStream>; loads: { pending: number } };
 
 const rootReducer = combineReducers({
   tabs: tabsReducer,
@@ -42,9 +45,9 @@ export const createApp = (devtools: DevtoolsState) => {
     reducer: rootReducer,
     preloadedState: { devtools },
     middleware: (getDefaultMiddleware) =>
-      getDefaultMiddleware({ thunk: { extraArgument: { spotStreams } satisfies ThunkExtra } }).prepend(
-        listener.middleware,
-      ),
+      getDefaultMiddleware({
+        thunk: { extraArgument: { spotStreams, loads: { pending: 0 } } satisfies ThunkExtra },
+      }).prepend(listener.middleware),
     devTools: import.meta.env.DEV && { name: "Deal editor (Redux)" },
   });
 

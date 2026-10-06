@@ -6,7 +6,8 @@
  *   (zustand's `devtools` middleware), one instance per store: the tabs, the
  *   switches, the options and every deal. Each `set`, named by its action,
  *   with the store's state after it, and time travel: a jump sets the state
- *   back from the extension's JSON copy (so an empty number comes back `null`).
+ *   back from the extension's JSON copy, all but the calculation (which it
+ *   leaves as it is); an empty number comes back `null` (no reviver).
  * - `?debug` in the URL: each change, logged to the console.
  */
 import type { StoreApi } from "zustand/vanilla";

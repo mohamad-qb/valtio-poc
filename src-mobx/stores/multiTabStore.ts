@@ -4,28 +4,34 @@ import { type DealStore, createDealStore } from "./dealStore.ts";
 
 const DEVTOOLS_STORAGE_KEY = "mobx-devtools";
 
-export type DevtoolsStore = {
-  isSpotPriceStreamEnabled: boolean;
-  isAutocalcEnabled: boolean;
+type Switches = { isSpotPriceStreamEnabled: boolean; isAutocalcEnabled: boolean };
+
+export type DevtoolsStore = Switches & {
   toggleSpotPriceStreamEnabled(): void;
   toggleAutocalcEnabled(): void;
 };
 
-const loadDevtools = (): Partial<DevtoolsStore> => {
+/** The stored switches, key by key: one missing, unreadable or not a boolean keeps its default. */
+const loadSwitches = (defaults: Switches): Switches => {
+  let stored: Partial<Record<keyof Switches, unknown>> = {};
   try {
-    return JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(localStorage.getItem(DEVTOOLS_STORAGE_KEY) ?? "{}");
+    if (typeof parsed === "object" && parsed !== null) stored = parsed;
   } catch {
-    return {};
+    // unreadable (not JSON, or no storage): the defaults
   }
+  const read = (key: keyof Switches) => {
+    const value = stored[key];
+    return typeof value === "boolean" ? value : defaults[key];
+  };
+  return { isSpotPriceStreamEnabled: read("isSpotPriceStreamEnabled"), isAutocalcEnabled: read("isAutocalcEnabled") };
 };
 
 /** App-wide developer settings, persisted to localStorage. */
 const createDevtoolsStore = (): DevtoolsStore => {
   const devtools = observable<DevtoolsStore>(
     {
-      isSpotPriceStreamEnabled: true,
-      isAutocalcEnabled: true,
-      ...loadDevtools(),
+      ...loadSwitches({ isSpotPriceStreamEnabled: true, isAutocalcEnabled: true }),
       toggleSpotPriceStreamEnabled() {
         devtools.isSpotPriceStreamEnabled = !devtools.isSpotPriceStreamEnabled;
       },
@@ -34,7 +40,7 @@ const createDevtoolsStore = (): DevtoolsStore => {
       },
     },
     {},
-    { autoBind: true },
+    { autoBind: true, name: "Switches" },
   );
 
   autorun(() => {
@@ -57,6 +63,7 @@ export type MultiTabStore = {
   activeDealId: string;
   deals: Record<string, DealStore>;
   readonly dealIds: string[];
+  /** A new deal, with its first group, in a new tab. */
   addNewDeal(): void;
   setActiveDeal(activeDealId: string): void;
 };
@@ -72,7 +79,9 @@ export const multiTabStore: MultiTabStore = observable<MultiTabStore>(
     addNewDeal() {
       const dealId = uuid();
       // the deal gets only the settings it reads, not the whole tab store
-      multiTabStore.deals[dealId] = createDealStore(multiTabStore.devtools);
+      const deal = createDealStore(multiTabStore.devtools);
+      deal.addNewGroup("VanillaGroup");
+      multiTabStore.deals[dealId] = deal;
       multiTabStore.activeDealId = dealId;
     },
     setActiveDeal(activeDealId) {
@@ -80,5 +89,5 @@ export const multiTabStore: MultiTabStore = observable<MultiTabStore>(
     },
   },
   { devtools: false },
-  { autoBind: true },
+  { autoBind: true, name: "Tabs" },
 );

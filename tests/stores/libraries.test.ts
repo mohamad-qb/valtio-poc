@@ -34,7 +34,7 @@ describe("mobx", () => {
       deal.writePaths([{ path: fieldPath(groupId, product, fieldId), value }]);
     let runs = 0;
     const stop = autorun(() => {
-      void watched.fields.strike.value;
+      void readField(watched.data, "strike");
       void watched.fields.strike.issues;
       runs++;
     });
@@ -151,6 +151,34 @@ describe("redux", () => {
     vi.resetModules();
   });
 
+  const loadRedux = async (autocalc = false) => {
+    const { createApp } = await import("../../src-redux/stores/store.ts");
+    const thunks = await import("../../src-redux/stores/thunks.ts");
+    const { calculationStarted } = await import("../../src-redux/stores/actions.ts");
+    const { createPathDeal } = await import("../../src-redux/stores/pathDeal.ts");
+    const app = createApp({ isSpotPriceStreamEnabled: false, isAutocalcEnabled: autocalc });
+    let started = 0;
+    app.listener.startListening({
+      actionCreator: calculationStarted,
+      effect: () => {
+        started += 1;
+      },
+    });
+    /** A deal with one Vanilla group: its first product's Fixing Source path, and that value now. */
+    const vanillaDeal = () => {
+      const dealId = app.store.dispatch(thunks.addDeal());
+      app.store.dispatch(thunks.addGroup(dealId, "VanillaGroup"));
+      const groupOf = () => {
+        const deal = app.store.getState().deals[dealId];
+        return deal.groups[deal.groupIds[0]];
+      };
+      const product = () => groupOf().products[groupOf().productIds[0]];
+      const path = (fieldId: string) => fieldPath(groupOf().id, product(), fieldId);
+      return { dealId, path, fixing: () => readField(product().data, "settlementFixingSource") };
+    };
+    return { ...app, ...thunks, createPathDeal, vanillaDeal, started: () => started };
+  };
+
   it("a write copies only the path to its product, and only when a value changes", async () => {
     const { createApp } = await import("../../src-redux/stores/store.ts");
     const { addDeal, addGroup, cloneGroup, writePaths } = await import("../../src-redux/stores/thunks.ts");
@@ -181,6 +209,77 @@ describe("redux", () => {
     const copy = cloned.groups[cloned.groupIds[2]];
     expect(copy.id).not.toBe(average.id);
     expect(copy.products[copy.productIds[0]].data).toBe(average.products[average.productIds[0]].data);
+    dispose();
+  });
+
+  it("a new tab's deal is created with its first group; a deal on its own has none", async () => {
+    const { store, dispose, addDeal, addNewDeal } = await loadRedux();
+    const tab = store.dispatch(addNewDeal());
+    const bare = store.dispatch(addDeal());
+    expect(store.getState().deals[tab].groupIds).toHaveLength(1);
+    expect(store.getState().deals[bare].groupIds).toHaveLength(0);
+    dispose();
+  });
+
+  it("options arriving reconcile every deal still on that parameter, not only the deal that asked", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const { store, dispose, addDeal, writePaths, vanillaDeal } = await loadRedux();
+    const a = vanillaDeal();
+    store.dispatch(writePaths(a.dealId, [{ path: a.path("settlementStyle"), value: "Cash" }]));
+    await sleep(40);
+    expect(a.fixing()).toBe("3");
+
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    store.dispatch(addDeal()); // a second deal loads its deal column's Cash options: nothing in the first asked
+    await sleep(40);
+    expect(a.fixing()).toBe("4");
+    dispose();
+  });
+
+  it("options arriving start one calculation, not two: products reconcile before the load counts as done", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const { store, dispose, cloneGroup, writePaths, vanillaDeal, started } = await loadRedux(true);
+    const { dealId, path } = vanillaDeal();
+    store.dispatch(writePaths(dealId, [{ path: "notionalCcy", value: "USD" }, { path: path("settlementStyle"), value: "Cash" }]));
+    await sleep(60); // Cash's first option taken (3), and the deal priced
+    expect(store.getState().deals[dealId].calc.status).toBe("done");
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    const before = started();
+
+    const deal = store.getState().deals[dealId];
+    store.dispatch(cloneGroup(dealId, deal.groupIds[0])); // the copy, still valid on 3, reloads Cash's options
+    await sleep(60);
+    const fixings = store.getState().deals[dealId].groupIds.map((id) => {
+      const { products, productIds } = store.getState().deals[dealId].groups[id];
+      return readField(products[productIds[0]].data, "settlementFixingSource");
+    });
+    expect(fixings).toEqual(["4", "4"]); // both reconciled
+    expect(store.getState().deals[dealId].calc.status).toBe("done");
+    expect(started() - before).toBe(1); // priced once, on the reconciled data: not on 3 first
+    dispose();
+  });
+
+  it("a deal listener that throws doesn't keep autocalc from running", async () => {
+    const { sleep } = await import("./support/fakeApi.ts");
+    const reported = vi.fn();
+    vi.stubGlobal("reportError", reported); // where the shared change hub reports a listener's error
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { store, dispose, createPathDeal, vanillaDeal, started } = await loadRedux(true);
+    const { dealId } = vanillaDeal();
+    const deal = createPathDeal(store, dealId);
+    deal.writePaths([{ path: "notionalCcy", value: "USD" }]);
+    await sleep(60);
+    expect(store.getState().deals[dealId].calc.status).toBe("done");
+    const before = started();
+
+    const stop = deal.subscribe(() => {
+      throw new Error("listener failed");
+    });
+    expect(() => deal.writePaths([{ path: "notionalAmount", value: 1000 }])).not.toThrow();
+    expect(started() - before).toBe(1); // in the same dispatch, after the listeners
+    stop();
     dispose();
   });
 });
@@ -351,10 +450,34 @@ describe("effector-nested", () => {
     vi.resetModules();
   });
 
-  const createDeal = async () => {
+  const createDeal = async (autocalc = false) => {
     const { createStore } = await import("effector");
     const { createDealStore } = await import("../../src-effector-nested/stores/dealStore.ts");
-    return createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(false) });
+    return createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(autocalc) });
+  };
+  type Deal = Awaited<ReturnType<typeof createDeal>>;
+  /** The deal's first product: its path to a field, and its Fixing Source now. */
+  const firstProduct = (deal: Deal) => {
+    const product = () => Object.values(Object.values(deal.$groups.getState())[0].products)[0];
+    const groupId = () => Object.keys(deal.$groups.getState())[0];
+    return {
+      path: (fieldId: string) => fieldPath(groupId(), product(), fieldId),
+      fixing: () => readField(product().data, "settlementFixingSource"),
+    };
+  };
+  /** A `localStorage` stand-in, and `storage` events from "another tab". */
+  const stubStorage = (items: Record<string, string>) => {
+    const values = new Map(Object.entries(items));
+    const events = new EventTarget();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: (key: string) => void values.delete(key),
+    });
+    vi.stubGlobal("addEventListener", events.addEventListener.bind(events));
+    vi.stubGlobal("removeEventListener", events.removeEventListener.bind(events));
+    return (key: string, newValue: string) =>
+      events.dispatchEvent(Object.assign(new Event("storage"), { storageArea: localStorage, key, newValue }));
   };
 
   it("copies only the path to an edited product", async () => {
@@ -401,6 +524,127 @@ describe("effector-nested", () => {
     ]);
     deal.dispose();
   });
+
+  it("tells its listeners about an edit once, and about a write that changes nothing not at all", async () => {
+    const deal = await createDeal();
+    const { createPathDeal } = await import("../../src-effector-nested/stores/pathDeal.ts");
+    deal.actions.addGroupAction("VanillaGroup");
+    const pathDeal = createPathDeal(deal);
+    const heard: string[] = [];
+    const stop = pathDeal.subscribe((change) => heard.push(change.kind));
+    pathDeal.writePaths([{ path: firstProduct(deal).path("strike"), value: "7" }]);
+    expect(heard).toEqual(["products"]); // its data and its issues: one report
+    heard.length = 0;
+    pathDeal.writePaths([{ path: "isInternal", value: true }]); // already internal
+    expect(heard).toEqual([]);
+    stop();
+    deal.dispose();
+  });
+
+  it("dispose unlinks the deal from the shared options effects: it no longer reconciles", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const { loadOptionsEffect } = await import("../../src-effector-nested/stores/optionsStore.ts");
+    const links = () => (loadOptionsEffect.done as unknown as { graphite: { next: unknown[] } }).graphite.next.length;
+    const unlinked = links();
+    const deal = await createDeal();
+    expect(links()).toBeGreaterThan(unlinked);
+    deal.actions.addGroupAction("VanillaGroup");
+    const product = firstProduct(deal);
+    deal.actions.writePathsAction([{ path: product.path("settlementStyle"), value: "Cash" }]);
+    await sleep(40);
+    expect(product.fixing()).toBe("3");
+
+    deal.dispose();
+    expect(links()).toBe(unlinked);
+    api.lists.Cash = [{ id: 4, name: "C4" }];
+    const other = await createDeal();
+    other.actions.loadDealOptionsAction(); // Cash's options again, now without 3
+    await sleep(40);
+    expect(product.fixing()).toBe("3"); // the disposed deal didn't follow
+    other.dispose();
+  });
+
+  it("options arriving reconcile every deal still on that parameter, not only the deal that asked", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const deal = await createDeal();
+    deal.actions.addGroupAction("VanillaGroup");
+    const product = firstProduct(deal);
+    deal.actions.writePathsAction([{ path: product.path("settlementStyle"), value: "Cash" }]);
+    await sleep(40);
+    expect(product.fixing()).toBe("3");
+
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    const other = await createDeal();
+    other.actions.loadDealOptionsAction(); // another deal loads its deal column's Cash options
+    await sleep(40);
+    expect(product.fixing()).toBe("4");
+    deal.dispose();
+    other.dispose();
+  });
+
+  it("options arriving start one calculation, not two: products reconcile before the load counts as done", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const deal = await createDeal(true);
+    deal.actions.addGroupAction("VanillaGroup");
+    deal.actions.writePathsAction([
+      { path: "notionalCcy", value: "USD" },
+      { path: firstProduct(deal).path("settlementStyle"), value: "Cash" },
+    ]);
+    await sleep(60); // Cash's first option taken (3), and the deal priced
+    expect(deal.$calc.getState().status).toBe("done");
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    const started = new Set<number>();
+    const stop = deal.$calc.watch(({ status, requestId }) => {
+      if (status === "calculating") started.add(requestId);
+    });
+
+    deal.actions.cloneGroupAction(Object.keys(deal.$groups.getState())[0]); // the copy, still valid on 3, reloads Cash's options
+    await sleep(60);
+    const fixings = Object.values(deal.$groups.getState()).map((group) =>
+      readField(Object.values(group.products)[0].data, "settlementFixingSource"),
+    );
+    expect(fixings).toEqual(["4", "4"]); // both reconciled
+    expect(deal.$calc.getState().status).toBe("done");
+    expect(started.size).toBe(1); // priced once, on the reconciled data: not on 3 first
+    stop();
+    deal.dispose();
+  });
+
+  it("a new tab's deal comes with its first group, its own sids, and its options loaded in the caller's scope", async () => {
+    stubStorage({});
+    const { allSettled, fork, serialize } = await import("effector");
+    const tabs = await import("../../src-effector-nested/stores/multiTabStore.ts");
+    const { $optionsByKey } = await import("../../src-effector-nested/stores/optionsStore.ts");
+    const scope = fork();
+    await allSettled(tabs.addNewDealAction, { scope });
+    await allSettled(tabs.addNewDealAction, { scope });
+    const deals = Object.values(scope.getState(tabs.$deals));
+    const groupCounts = (read: (deal: Deal) => object) => deals.map((deal) => Object.keys(read(deal)).length);
+    expect(groupCounts((deal) => scope.getState(deal.$groups))).toEqual([1, 1]);
+    expect(deals[0].$groups.sid).not.toBe(deals[1].$groups.sid);
+    expect(Object.keys(scope.getState($optionsByKey))).toEqual(["fixingSources:Cash"]);
+    expect($optionsByKey.getState()).toEqual({}); // nothing outside the scope
+
+    const restored = fork({ values: serialize(scope) });
+    expect(groupCounts((deal) => restored.getState(deal.$groups))).toEqual([1, 1]); // each deal keeps its own
+  });
+
+  it("restores each stored switch on its own: a corrupt or wrong-typed one falls back to its default, quietly", async () => {
+    const errors = vi.spyOn(console, "error");
+    for (const stored of ["{not json", JSON.stringify("yes")]) {
+      vi.resetModules();
+      stubStorage({
+        "effector-nested-devtools:isAutocalcEnabled": stored,
+        "effector-nested-devtools:isSpotPriceStreamEnabled": "false",
+      });
+      const tabs = await import("../../src-effector-nested/stores/multiTabStore.ts");
+      expect([tabs.$isAutocalcEnabled.getState(), tabs.$isSpotPriceStreamEnabled.getState()]).toEqual([true, false]);
+    }
+    expect(errors).not.toHaveBeenCalled();
+  });
 });
 
 describe("effector-model", () => {
@@ -409,10 +653,33 @@ describe("effector-model", () => {
     vi.resetModules();
   });
 
-  const createDeal = async () => {
+  const createDeal = async (autocalc = false) => {
     const { createStore } = await import("effector");
     const { createDealStore } = await import("../../src-effector-model/stores/dealStore.ts");
-    return createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(false) });
+    return createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(autocalc) });
+  };
+  type Deal = Awaited<ReturnType<typeof createDeal>>;
+  /** The deal's first product: its path to a field, and its Fixing Source now. */
+  const firstProduct = (deal: Deal) => {
+    const group = () => deal.$groups.getState()[0];
+    return {
+      path: (fieldId: string) => fieldPath(group().id, group().products[0] as never, fieldId),
+      fixing: () => readField(group().products[0].data!, "settlementFixingSource"),
+    };
+  };
+  /** A `localStorage` stand-in, and `storage` events from "another tab". */
+  const stubStorage = (items: Record<string, string>) => {
+    const values = new Map(Object.entries(items));
+    const events = new EventTarget();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => void values.set(key, value),
+      removeItem: (key: string) => void values.delete(key),
+    });
+    vi.stubGlobal("addEventListener", events.addEventListener.bind(events));
+    vi.stubGlobal("removeEventListener", events.removeEventListener.bind(events));
+    return (key: string, newValue: string) =>
+      events.dispatchEvent(Object.assign(new Event("storage"), { storageArea: localStorage, key, newValue }));
   };
 
   it("a write reaches only its own product's stores", async () => {
@@ -451,5 +718,128 @@ describe("effector-model", () => {
       "Vanilla Group #1", "Vanilla Group #2", "Average #3",
     ]);
     deal.dispose();
+  });
+
+  it("a batch over 10 groups outdates the price once, and autocalc prices it once, whole", async () => {
+    const { sleep } = await import("./support/fakeApi.ts");
+    const deal = await createDeal(true);
+    for (let i = 0; i < 10; i += 1) deal.actions.addGroupAction("VanillaGroup");
+    deal.actions.writePathsAction([{ path: "notionalCcy", value: "USD" }]);
+    await sleep(60);
+    expect(deal.$calc.getState()).toMatchObject({ status: "done", price: 10 });
+    const started = new Set<number>();
+    const stop = deal.$calc.watch(({ status, requestId }) => {
+      if (status === "calculating") started.add(requestId);
+    });
+    const { requestId } = deal.$calc.getState();
+
+    deal.actions.writePathsAction([{ path: "notionalAmount", value: 1000 }]); // synced: every product, in 10 groups
+    expect(deal.$calc.getState().requestId - requestId).toBe(2); // outdated once, then the one request
+    expect(started.size).toBe(1);
+    await sleep(60);
+    expect(deal.$calc.getState()).toMatchObject({ status: "done", price: 20 }); // (1 + 1000 / 1000) × 10
+    stop();
+    deal.dispose();
+  });
+
+  it("dispose unlinks the deal from the shared options effects: it no longer reconciles", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const { loadOptionsEffect } = await import("../../src-effector-model/stores/optionsStore.ts");
+    const links = () => (loadOptionsEffect.done as unknown as { graphite: { next: unknown[] } }).graphite.next.length;
+    const unlinked = links();
+    const deal = await createDeal();
+    expect(links()).toBeGreaterThan(unlinked);
+    deal.actions.addGroupAction("VanillaGroup");
+    const product = firstProduct(deal);
+    deal.actions.writePathsAction([{ path: product.path("settlementStyle"), value: "Cash" }]);
+    await sleep(40);
+    expect(product.fixing()).toBe("3");
+
+    deal.dispose();
+    expect(links()).toBe(unlinked);
+    api.lists.Cash = [{ id: 4, name: "C4" }];
+    const other = await createDeal();
+    other.actions.loadDealOptionsAction(); // Cash's options again, now without 3
+    await sleep(40);
+    expect(product.fixing()).toBe("3"); // the disposed deal didn't follow
+    other.dispose();
+  });
+
+  it("options arriving reconcile every deal still on that parameter, not only the deal that asked", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const deal = await createDeal();
+    deal.actions.addGroupAction("VanillaGroup");
+    const product = firstProduct(deal);
+    deal.actions.writePathsAction([{ path: product.path("settlementStyle"), value: "Cash" }]);
+    await sleep(40);
+    expect(product.fixing()).toBe("3");
+
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    const other = await createDeal();
+    other.actions.loadDealOptionsAction(); // another deal loads its deal column's Cash options
+    await sleep(40);
+    expect(product.fixing()).toBe("4");
+    deal.dispose();
+    other.dispose();
+  });
+
+  it("options arriving start one calculation, not two: products reconcile before the load counts as done", async () => {
+    const api = installFakeApi({ Cash: [{ id: 3, name: "Shared" }, { id: 4, name: "C4" }] });
+    const { sleep } = await import("./support/fakeApi.ts");
+    const deal = await createDeal(true);
+    deal.actions.addGroupAction("VanillaGroup");
+    deal.actions.writePathsAction([
+      { path: "notionalCcy", value: "USD" },
+      { path: firstProduct(deal).path("settlementStyle"), value: "Cash" },
+    ]);
+    await sleep(60); // Cash's first option taken (3), and the deal priced
+    expect(deal.$calc.getState().status).toBe("done");
+    api.lists.Cash = [{ id: 4, name: "C4" }]; // 3 is no longer offered
+    const started = new Set<number>();
+    const stop = deal.$calc.watch(({ status, requestId }) => {
+      if (status === "calculating") started.add(requestId);
+    });
+
+    deal.actions.cloneGroupAction(deal.$order.getState()[0]); // the copy, still valid on 3, reloads Cash's options
+    await sleep(60);
+    const fixings = deal.$groups.getState().map((group) => readField(group.products[0].data!, "settlementFixingSource"));
+    expect(fixings).toEqual(["4", "4"]); // both reconciled
+    expect(deal.$calc.getState().status).toBe("done");
+    expect(started.size).toBe(1); // priced once, on the reconciled data: not on 3 first
+    stop();
+    deal.dispose();
+  });
+
+  it("a new tab's deal comes with its first group", async () => {
+    stubStorage({});
+    const tabs = await import("../../src-effector-model/stores/multiTabStore.ts");
+    tabs.addNewDealAction();
+    const [deal] = Object.values(tabs.$deals.getState());
+    expect(deal.$groups.getState().map((group) => group.groupType)).toEqual(["VanillaGroup"]);
+  });
+
+  it("keeps its switches to itself: another browser tab's change isn't followed (D3: only Effector Nested syncs)", async () => {
+    const fromOtherTab = stubStorage({});
+    const tabs = await import("../../src-effector-model/stores/multiTabStore.ts");
+    fromOtherTab("effector-model-devtools:isAutocalcEnabled", "false");
+    expect(tabs.$isAutocalcEnabled.getState()).toBe(true);
+    tabs.toggleAutocalcEnabledAction();
+    expect(localStorage.getItem("effector-model-devtools:isAutocalcEnabled")).toBe("false"); // its own changes are saved
+  });
+
+  it("restores each stored switch on its own: a corrupt or wrong-typed one falls back to its default, quietly", async () => {
+    const errors = vi.spyOn(console, "error");
+    for (const stored of ["{not json", JSON.stringify("yes")]) {
+      vi.resetModules();
+      stubStorage({
+        "effector-model-devtools:isAutocalcEnabled": stored,
+        "effector-model-devtools:isSpotPriceStreamEnabled": "false",
+      });
+      const tabs = await import("../../src-effector-model/stores/multiTabStore.ts");
+      expect([tabs.$isAutocalcEnabled.getState(), tabs.$isSpotPriceStreamEnabled.getState()]).toEqual([true, false]);
+    }
+    expect(errors).not.toHaveBeenCalled();
   });
 });

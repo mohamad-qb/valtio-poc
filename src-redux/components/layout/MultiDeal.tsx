@@ -5,7 +5,7 @@ import { Deal } from "./Deal.tsx";
 import { DealIdProvider } from "../providers/DealIdProvider.tsx";
 import { useOnMount } from "@shared/hooks/useOnMount.ts";
 import { activeDealSet } from "../../stores/tabsSlice.ts";
-import { addDeal } from "../../stores/thunks.ts";
+import { addNewDeal } from "../../stores/thunks.ts";
 import { useAppDispatch, useAppSelector } from "../../hooks.ts";
 
 const SingleDeal = memo(
@@ -28,7 +28,7 @@ export const MultiDeal = memo(() => {
   const activeDealId = useAppSelector((state) => state.tabs.activeDealId);
 
   useOnMount(() => {
-    dispatch(addDeal());
+    dispatch(addNewDeal());
   });
 
   if (dealIds.length === 0) {
@@ -50,7 +50,7 @@ export const MultiDeal = memo(() => {
           </button>
         ))}
 
-        <button className="button" onClick={() => dispatch(addDeal())}>
+        <button className="button" onClick={() => dispatch(addNewDeal())}>
           Add New Deal
         </button>
       </div>

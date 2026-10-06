@@ -1,7 +1,7 @@
 import { observable } from "mobx";
 import type { DealFieldsState } from "@shared/dealFields.ts";
 import type { ProductFieldId } from "@shared/fields.ts";
-import { getValueByPath, resolveParent } from "@shared/lib/path.ts";
+import { resolveParent } from "@shared/lib/path.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import {
   type GenericProductDefinition,
@@ -9,7 +9,6 @@ import {
   type ProductType,
   type ProductUi,
   definitionOf,
-  isReadOnly,
 } from "@shared/products/productRegistry.ts";
 import { fieldIssues } from "@shared/validation.ts";
 import { type FieldModel, createFieldModel } from "./fieldModel.ts";
@@ -19,7 +18,7 @@ export type Product = {
   readonly id: string;
   ui: ProductUi;
   data: ProductData;
-  /** One model per field: its value and issues, observed one by one. */
+  /** One model per field: its issues, observed one by one. */
   readonly fields: Record<ProductFieldId, FieldModel>;
   readonly hasValidationErrors: boolean;
 };
@@ -58,16 +57,11 @@ export const createProduct = (
   sourceData?: ProductData,
 ): Product => {
   const definition = definitionOf(productType);
-  const read = (fieldId: ProductFieldId) => getValueByPath(product.data, definition.fieldPaths[fieldId]);
 
   const fields = Object.fromEntries(
     (Object.keys(definition.fieldPaths) as ProductFieldId[]).map((fieldId) => [
       fieldId,
-      createFieldModel({
-        read: () => read(fieldId),
-        issues: () => fieldIssues(definition, fieldId, product.data),
-        readOnly: isReadOnly(definition, fieldId),
-      }),
+      createFieldModel(() => fieldIssues(definition, fieldId, product.data)),
     ]),
   ) as Record<ProductFieldId, FieldModel>;
 
@@ -77,11 +71,13 @@ export const createProduct = (
       ui,
       data: withDerivedFields(definition, sourceData ?? definition.createData(defaults), () => product),
       fields,
+      /** Reads every field (no early exit), so each field's issues stay observed: cached. */
       get hasValidationErrors() {
-        return Object.values(fields).some((field) => field.issues.length > 0);
+        return Object.values(fields).filter((field) => field.issues.length > 0).length > 0;
       },
     },
     { id: false, fields: false },
+    { name: "Product" },
   );
   return product;
 };

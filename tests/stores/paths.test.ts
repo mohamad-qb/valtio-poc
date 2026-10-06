@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createStore } from "effector";
 import { dateInDays } from "@shared/lib/date.ts";
 import type { PathDeal } from "@shared/pathDeal.ts";
 import { type DealAdapter, appNames, createAdapter } from "./support/adapters.ts";
@@ -93,31 +92,5 @@ describe.each(appNames)("%s: reading and writing by path", (app) => {
     expect(deal.readPath(fixing)).toBe("3");
     await sleep(20); // Cash's options reloaded: 3 is one of them, so it stays
     expect(deal.readPath(fixing)).toBe("3");
-  });
-});
-
-describe("effector-model: a store per path", () => {
-  it("updates only when its own value changes", async () => {
-    installFakeApi();
-    vi.resetModules();
-    const { createDealStore } = await import("../../src-effector-model/stores/dealStore.ts");
-    const deal = createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(false) });
-    deal.actions.addGroupAction("Strategy");
-    deal.actions.addGroupAction("Average");
-    const strike = (group: number, product: number) => {
-      const { id, products } = deal.$groups.getState()[group];
-      return `groups.${id}.products.${products[product].id}.data.${group === 1 ? "avroCommon" : "optionsCommon"}.strike`;
-    };
-    const $strike = deal.pathStore(strike(0, 0));
-    expect(deal.pathStore(strike(0, 0))).toBe($strike); // one store per path
-    const seen: unknown[] = [];
-    const stop = $strike.updates.watch((value) => seen.push(value));
-    deal.actions.writePathsAction([{ path: strike(0, 1), value: "5" }]); // the other product
-    deal.actions.writePathsAction([{ path: strike(1, 0), value: "6" }]); // another group
-    deal.actions.writePathsAction([{ path: strike(0, 0), value: "7" }]);
-    expect(seen).toEqual(["7"]);
-    stop();
-    deal.dispose();
-    vi.unstubAllGlobals();
   });
 });

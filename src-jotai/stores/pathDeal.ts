@@ -17,12 +17,23 @@ const store = getDefaultStore();
  * from its data alone: they change with it, and need no watch of their own.
  */
 export const createPathDeal = (dealStore: DealStore): PathDeal => {
+  // product id → group id, rebuilt when the group order changes (a group's products never do)
+  const groupOf = new Map<string, string>();
+  let indexed: readonly string[] | undefined;
   const findProduct = (productId: string) => {
-    for (const groupId of store.get(dealStore.groupIdsAtom)) {
-      const product = store.get(dealStore.groupsAtom)[groupId]?.products[productId];
-      if (product) return { groupId, product };
+    const groupIds = store.get(dealStore.groupIdsAtom);
+    const groups = store.get(dealStore.groupsAtom);
+    if (groupIds !== indexed) {
+      indexed = groupIds;
+      groupOf.clear();
+      for (const groupId of groupIds) {
+        for (const id of groups[groupId].productIds) groupOf.set(id, groupId);
+      }
     }
-    return undefined;
+    const groupId = groupOf.get(productId);
+    if (groupId === undefined) return undefined;
+    const product = groups[groupId]?.products[productId];
+    return product && { groupId, product };
   };
 
   const subscribeToDeal = createChangeHub((emit) => {
@@ -64,11 +75,13 @@ export const createPathDeal = (dealStore: DealStore): PathDeal => {
   });
 
   return {
-    getGroups: () =>
-      store.get(dealStore.groupIdsAtom).map((id) => {
-        const group = store.get(dealStore.groupsAtom)[id];
+    getGroups: () => {
+      const groups = store.get(dealStore.groupsAtom);
+      return store.get(dealStore.groupIdsAtom).map((id) => {
+        const group = groups[id];
         return { id, title: store.get(group.uiAtom).title, productIds: group.productIds };
-      }),
+      });
+    },
     getProduct: (productId) => {
       const found = findProduct(productId);
       return found && { groupId: found.groupId, title: found.product.ui.title, data: store.get(found.product.dataAtom) };

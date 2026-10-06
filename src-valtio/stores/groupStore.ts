@@ -1,9 +1,9 @@
 import { proxy } from "valtio";
 import { deepClone } from "valtio/utils";
+import type { DealFieldsState } from "@shared/dealFields.ts";
 import { type GroupType, groupDefinitions, productUi } from "@shared/groups.ts";
 import { uuid } from "@shared/lib/uuid.ts";
 import type { AnyProductStore } from "@shared/products/productRegistry.ts";
-import type { DealStore } from "./dealStore.ts";
 import { createProductStore } from "./productStore.ts";
 
 export type GroupStore = {
@@ -20,39 +20,29 @@ export type GroupStore = {
  * the group, once, since a group's products never change.
  */
 export const createGroupStore = (
-  $dealStore: DealStore,
+  dealFields: DealFieldsState,
   groupType: GroupType,
   source?: GroupStore,
-) => {
-  const groupId = uuid();
+): GroupStore => {
   const groupStore = proxy<GroupStore>({
-    id: groupId,
+    id: uuid(),
     ui: { title: "", index: 0 },
     groupType,
     products: {},
     productIds: [],
   });
 
-  const disposers: Array<() => void> = [];
-
   groupDefinitions[groupType].productTypes.forEach((productType, index) => {
     const productId = uuid();
     const sourceProduct = source?.products[source.productIds[index]];
-    const { productStore, dispose } = createProductStore(
-      $dealStore,
+    groupStore.products[productId] = createProductStore(
+      dealFields,
       productType,
-      `groups.${groupId}.products.${productId}`,
       productUi(productType, index),
       sourceProduct && deepClone(sourceProduct.data),
     );
-    groupStore.products[productId] = productStore;
     groupStore.productIds.push(productId);
-    disposers.push(dispose);
   });
 
-  return {
-    groupStore,
-    /** Drops every product's subscriptions; call when the group is removed. */
-    dispose: () => disposers.forEach((dispose) => dispose()),
-  };
+  return groupStore;
 };
