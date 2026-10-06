@@ -6,6 +6,7 @@ import {
   fieldsAbsentFor,
 } from "../fields.ts";
 import { getValueByPath, removeIn, setIn } from "../lib/path.ts";
+import { productPath } from "../paths.ts";
 import {
   type Option,
   type OptionsSource,
@@ -39,6 +40,20 @@ export type ProductWrite =
 export type LeafChange =
   | { path: string; value: unknown; derived?: boolean }
   | { path: string; remove: true };
+
+/** A product's leaf change by its full path in the deal (`groups.<g>.products.<p>.data.<path>`). */
+export type DealLeafChange = { path: string; value: unknown } | { path: string; removed: true };
+
+/** A product's leaf changes, addressed from the deal's root. */
+export const toDealLeafChanges = (
+  groupId: string,
+  productId: string,
+  changes: readonly LeafChange[],
+): DealLeafChange[] =>
+  changes.map((change) => {
+    const path = productPath(groupId, productId, change.path);
+    return "remove" in change ? { path, removed: true } : { path, value: change.value };
+  });
 
 /** One list of options: a source, for one parameter. */
 export type OptionsRequest = { source: OptionsSource; param: string };

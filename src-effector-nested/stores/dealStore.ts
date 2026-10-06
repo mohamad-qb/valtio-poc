@@ -27,7 +27,15 @@ import type { GroupType } from "@shared/groups.ts";
 import { setIn } from "@shared/lib/path.ts";
 import type { PathWrite } from "@shared/paths.ts";
 import type { ProductData } from "@shared/products/productRegistry.ts";
-import { optionsRequestsOf, reconcileWrites, uniqueRequests } from "@shared/products/productWrites.ts";
+import {
+  type DealLeafChange,
+  type ProductWrite,
+  optionsRequestsOf,
+  planProductWrites,
+  reconcileWrites,
+  toDealLeafChanges,
+  uniqueRequests,
+} from "@shared/products/productWrites.ts";
 import { createSpotPriceStream } from "@shared/spotPriceStream.ts";
 import {
   type GroupsState,
@@ -35,16 +43,38 @@ import {
   cloneGroupReducer,
   groupCreatedReducer,
   groupRemovedReducer,
-  mapProducts,
   productsOf,
 } from "./groupStore.ts";
 import { loadAllOptionsEffect, loadOptionsEffect } from "./optionsStore.ts";
-import { validateProducts, withProductWrites } from "./productStore.ts";
+import { validateProducts } from "./productStore.ts";
 
 /** What a deal needs from the app-wide developer settings. */
 type DealDevtools = {
   $isSpotPriceStreamEnabled: Store<boolean>;
   $isAutocalcEnabled: Store<boolean>;
+};
+
+/** Writes to products, each addressed by its group and id. */
+type AddressedWrites = { groupId: string; productId: string; writes: readonly ProductWrite[] };
+
+/**
+ * Product writes applied by the shared rules, copying only the path to each
+ * changed product (the groups, its group, its products) and, inside it, to
+ * each changed leaf; the same groups if nothing changed. Also the leaves
+ * they changed, by full path: what DevTools shows for the batch.
+ */
+const applyProductWrites = (groups: GroupsState, addressed: readonly AddressedWrites[]) => {
+  let next = groups;
+  const changes: DealLeafChange[] = [];
+  for (const { groupId, productId, writes } of addressed) {
+    const product = next[groupId]?.products[productId];
+    if (!product) continue;
+    const planned = planProductWrites(product.data, writes);
+    if (!planned.changes.length) continue;
+    next = setIn(next, `${groupId}.products.${productId}`, { ...product, data: planned.data });
+    changes.push(...toDealLeafChanges(groupId, productId, planned.changes));
+  }
+  return { nextGroups: next, changes };
 };
 
 /** Every product with where it lives, in display order: what the write router needs. */
@@ -116,23 +146,23 @@ export const createDealStore = (devtools: DealDevtools) => {
   $groups.on(actions.removeGroupAction, groupRemovedReducer);
 
   // --- writes by path: routed by the shared rules, folded into one new `$groups`
+  // (planned once, on the groups the router read: the leaves reported are the ones applied)
   const routed = connect({
     clock: actions.writePathsAction,
     source: { groups: $groups, dealFields: $dealFields, settings: $settings },
-    fn: ({ groups, dealFields, settings }, writes) =>
-      routeWrites({ dealFields, settings, products: dealProducts(groups) }, writes),
+    fn: ({ groups, dealFields, settings }, writes) => {
+      const routedWrites = routeWrites({ dealFields, settings, products: dealProducts(groups) }, writes);
+      const addressed = [...routedWrites.products].map(([productId, { groupId, writes: productWrites }]) => ({
+        groupId,
+        productId,
+        writes: productWrites,
+      }));
+      return { ...routedWrites, ...applyProductWrites(groups, addressed) };
+    },
   });
   $dealFields.on(routed, (_, { dealFields }) => dealFields);
   $settings.on(routed, (_, { settings }) => settings);
-  $groups.on(routed, (groups, { products }) => {
-    let next = groups;
-    for (const [productId, { groupId, writes }] of products) {
-      const product = next[groupId].products[productId];
-      // copies only the path to the product: the groups, its group, its products
-      next = setIn(next, `${groupId}.products.${productId}`, withProductWrites(product, writes));
-    }
-    return next;
-  });
+  $groups.on(routed, (_, { nextGroups }) => nextGroups);
 
   // --- async options (e.g. Fixing Source): loaded for a new group, reloaded on change
   connect({
@@ -148,9 +178,35 @@ export const createDealStore = (devtools: DealDevtools) => {
   });
   // options arrived: products still on that parameter keep their value if it's
   // an option, else take the first (stale responses: ignored)
-  $groups.on(loadOptionsEffect.done, (groups, { params, result }) =>
-    mapProducts(groups, (product) => withProductWrites(product, reconcileWrites(product.data, params, result))),
-  );
+  const optionsReconciled = connect({
+    clock: loadOptionsEffect.done,
+    source: $groups,
+    fn: (groups, { params, result }) =>
+      applyProductWrites(
+        groups,
+        Object.values(groups).flatMap((group) =>
+          Object.values(group.products).map((product) => ({
+            groupId: group.id,
+            productId: product.id,
+            writes: reconcileWrites(product.data, params, result),
+          })),
+        ),
+      ),
+  });
+  $groups.on(optionsReconciled, (_, { nextGroups }) => nextGroups);
+
+  /**
+   * Every leaf a batch changed in the products, by full path
+   * (`groups.<g>.products.<p>.data.…`): what a write did, without the whole
+   * `$groups` it lands in. For DevTools and anything else that wants paths.
+   */
+  const productLeavesChanged = createEvent<readonly DealLeafChange[]>();
+  connect({
+    clock: [routed, optionsReconciled],
+    filter: ({ changes }) => changes.length > 0,
+    fn: ({ changes }) => changes,
+    target: productLeavesChanged,
+  });
 
   // the deal column's own options (its default parameters), loaded with the deal
   loadAllOptionsEffect(dealOptionsRequests);
@@ -205,6 +261,7 @@ export const createDealStore = (devtools: DealDevtools) => {
 
   return {
     actions,
+    productLeavesChanged,
     // stores
     $dealFields,
     $groups,

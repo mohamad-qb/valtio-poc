@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getValueByPath } from "@shared/lib/path.ts";
 import { productPath } from "@shared/paths.ts";
 import { definitionOf, productTypeOf, readField } from "@shared/products/productRegistry.ts";
-import { installFakeApi } from "./support/fakeApi.ts";
+import { installFakeApi, sleep } from "./support/fakeApi.ts";
 
 // guarantees that are specific to how each library updates
 
@@ -451,6 +451,45 @@ describe("effector-model", () => {
     expect(deal.$groups.getState().map((group) => group.ui.title)).toEqual([
       "Vanilla Group #1", "Vanilla Group #2", "Average #3",
     ]);
+    deal.dispose();
+  });
+});
+
+describe.each(["effector-nested", "effector-model"] as const)("%s: leaf changes", (app) => {
+  beforeEach(() => {
+    installFakeApi({ Cash: [{ id: 4, name: "C4" }] });
+    vi.resetModules();
+  });
+
+  it("each batch reports exactly the leaves it changed, by full path (what DevTools shows)", async () => {
+    const { createStore } = await import("effector");
+    const { createDealStore } = await import(`../../src-${app}/stores/dealStore.ts`);
+    const deal = createDealStore({ $isSpotPriceStreamEnabled: createStore(false), $isAutocalcEnabled: createStore(false) });
+    deal.actions.addGroupAction("VanillaGroup");
+    deal.actions.addGroupAction("Strategy");
+    await sleep(20);
+    const batches: { path: string; value?: unknown; removed?: true }[][] = [];
+    const stop = deal.productLeavesChanged.watch((changes: never) => batches.push(changes));
+
+    deal.actions.writePathsAction([{ path: "notionalAmount", value: 1000 }]); // synced: every product
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map(({ path }) => path.replace(/^groups\.[^.]+\.products\.[^.]+\./, "…"))).toEqual([
+      "…data.optionsCommon.base.notional.amount",
+      "…data.optionsCommon.base.notional.amount",
+      "…data.optionsCommon.base.notional.amount",
+    ]);
+    expect(batches[0].every(({ value }) => value === 1000)).toBe(true);
+
+    deal.actions.writePathsAction([{ path: "notionalAmount", value: 1000 }]); // same value: no batch
+    expect(batches).toHaveLength(1);
+
+    const [first] = batches[0];
+    const productRoot = first.path.slice(0, first.path.indexOf(".data.") + ".data.".length);
+    deal.actions.writePathsAction([{ path: `${productRoot}settlementStyle`, value: "Cash" }]);
+    expect(batches[1]).toEqual([{ path: `${productRoot}settlementStyle`, value: "Cash" }]);
+    await sleep(20); // Cash's options arrive: the fixing source it adds is a batch of its own
+    expect(batches[2]).toEqual([{ path: `${productRoot}cashSettlement.settlementFixingSource`, value: "4" }]);
+    stop();
     deal.dispose();
   });
 });

@@ -7,7 +7,6 @@ import {
   type ProductUi,
   definitionOf,
 } from "@shared/products/productRegistry.ts";
-import { type ProductWrite, planProductWrites } from "@shared/products/productWrites.ts";
 import { type FieldIssues, type RuleScope, createIssuesMemo } from "@shared/validation.ts";
 import type { GroupsState } from "./groupStore.ts";
 
@@ -35,16 +34,6 @@ export const createProduct = (
     // plain data, so a clone is a deep copy (NaN and all)
     data: source ? structuredClone(source.data) : definitionOf(productType).createData(defaults),
   }) as ProductState;
-
-/**
- * The product with writes applied, by the shared rules: only the objects
- * along the changed paths are copied, and the same product comes back if
- * nothing changed, so nothing bound to it re-renders.
- */
-export const withProductWrites = (product: ProductState, writes: readonly ProductWrite[]): ProductState => {
-  const { data } = planProductWrites(product.data, writes);
-  return data === product.data ? product : ({ ...product, data } as ProductState);
-};
 
 const validate = createIssuesMemo();
 

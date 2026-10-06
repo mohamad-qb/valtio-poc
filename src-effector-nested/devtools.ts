@@ -24,11 +24,27 @@ import { $deals } from "./stores/multiTabStore.ts";
 const isLiveGraph = (value: object) =>
   ("type" in value && (value.type === "instance" || value.type === "keyval")) ||
   ("seq" in value && "family" in value); // a graph node
-const replacer = (_key: string, value: unknown) => {
+
+/**
+ * The unnamed `combine(...)`s effector builds for a `sample`'s object
+ * `source`: each holds a copy of what it reads (`$groups` whole) and updates
+ * with it, so every edit logged the full groups several times over, saying
+ * nothing the stores' own entries don't. Hidden from the log, and from the
+ * State and Diff tabs.
+ */
+// the extension's serializer passes array indices as numbers
+const isSampleSource = (key: unknown) => typeof key === "string" && key.startsWith("combine(");
+const actionsDenylist = ["^🥗 \\[combine\\] combine\\("];
+
+const replacer = (key: unknown, value: unknown) => {
+  if (isSampleSource(key)) return undefined;
   if (is.unit(value)) return `[${value.kind}]`;
   if (typeof value === "object" && value !== null && isLiveGraph(value)) return "[effector graph]";
   return value;
 };
+
+// passed on to the extension's `connect` whole (the adapter's type names only `serialize`)
+const devToolsConfig = { serialize: { replacer }, actionsDenylist };
 
 // the adapter logs an error when the extension is missing: attach only if it's
 // installed, and say so otherwise (e.g. its site access doesn't cover this page)
@@ -38,7 +54,7 @@ if ("__REDUX_DEVTOOLS_EXTENSION__" in window) {
     name: "Deal editor (Effector, nested)",
     trace: true,
     stateTab: true,
-    devToolsConfig: { serialize: { replacer } },
+    devToolsConfig,
   });
 } else {
   console.info(

@@ -27,30 +27,6 @@ export const productOf = (groups: GroupsState, groupId: string, productId: strin
 export const productsOf = (groups: GroupsState) =>
   Object.values(groups).flatMap((group) => Object.values(group.products));
 
-/** Updates every value; the same object if none changed. */
-const mapValues = <T>(record: Record<string, T>, update: (value: T) => T) => {
-  let changed = false;
-  const next: Record<string, T> = {};
-  for (const [id, value] of Object.entries(record)) {
-    next[id] = update(value);
-    changed ||= next[id] !== value;
-  }
-  return changed ? next : record; // same object: no update, no re-render
-};
-
-/**
- * Updates every product of every group. Only the groups with a changed
- * product are copied; the others, and their products, keep their identity.
- */
-export const mapProducts = (
-  groups: GroupsState,
-  update: (product: ProductState) => ProductState,
-) =>
-  mapValues(groups, (group) => {
-    const products = mapValues(group.products, update);
-    return products === group.products ? group : { ...group, products };
-  });
-
 /**
  * Builds a group and its products, with new ids. `source` (a group to clone)
  * has its products copied by position. Products are numbered within the group.
